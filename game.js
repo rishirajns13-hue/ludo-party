@@ -10,7 +10,6 @@ const ACCOUNTS = {
   'panchara kunju': { name: 'Panchara Kunju', hash: 'f63b078686d6b8b394222bbbfda7f69ae454c750a8d430076cb8fa994b3933ce' },
   ammu: { name: 'Ammu', hash: 'eeb63f1ee20923f64678e8aaba9d54eb1bb6fffa6dad7ded0345dd1dea393890' },
 };
-const PEER_PREFIX = 'ludo-party-rr7-';
 const EMOJIS = ['😂', '🔥', '😭', '👏', '😈', '🫡'];
 const COLORS = { red: '#ff5a5f', green: '#2bc48a', yellow: '#ffc233', blue: '#4d9de0' };
 const INK = '#2b2140';
@@ -160,7 +159,7 @@ function centerOf(el) { const r = el.getBoundingClientRect(); return [r.left + r
 let me = null;            // { name, proof }
 let mode = null;          // 'host' | 'guest' | 'cpu'
 let myColors = [];
-let peer = null, conn = null, roomCode = null;
+let conn = null, roomCode = null;
 let game = null;          // last fully-rendered state
 let display = null;       // token positions currently drawn (lags game during animations)
 let busy = false;
@@ -433,7 +432,86 @@ function sendReaction(e) {
   if (conn && conn.open) conn.send({ t: 'react', e });
 }
 
-/* ================= networking (PeerJS) ================= */
+/* ================= networking (encrypted messages via public MQTT brokers) =================
+   Both players connect *out* to a broker over secure WebSockets, so it works on any network
+   (mobile data, CGNAT, office Wi-Fi). Topic and AES key are derived from the room code, so
+   the broker only ever sees a hashed topic and ciphertext. */
+const BROKERS = ['wss://broker.emqx.io:8084/mqtt', 'wss://broker.hivemq.com:8884/mqtt'];
+const enc = new TextEncoder(), dec = new TextDecoder();
+let clients = [];         // open MQTT clients
+let session = 0;          // bumped on teardown so stale async work can bail out
+const randomId = () => [...crypto.getRandomValues(new Uint8Array(8))].map((b) => b.toString(16).padStart(2, '0')).join('');
+
+async function roomKeys(code) {
+  const topic = 'ludoparty-rr7/' + (await sha256('topic:' + code)).slice(0, 32);
+  const raw = await crypto.subtle.digest('SHA-256', enc.encode('key:' + code));
+  const key = await crypto.subtle.importKey('raw', raw, 'AES-GCM', false, ['encrypt', 'decrypt']);
+  return { topic, key };
+}
+async function seal(key, obj) {
+  const iv = crypto.getRandomValues(new Uint8Array(12));
+  const ct = new Uint8Array(await crypto.subtle.encrypt({ name: 'AES-GCM', iv }, key, enc.encode(JSON.stringify(obj))));
+  const out = new Uint8Array(12 + ct.length);
+  out.set(iv); out.set(ct, 12);
+  return out;
+}
+async function unseal(key, payload) {
+  try {
+    const buf = new Uint8Array(payload);
+    const pt = await crypto.subtle.decrypt({ name: 'AES-GCM', iv: buf.slice(0, 12) }, key, buf.slice(12));
+    return JSON.parse(dec.decode(pt));
+  } catch (e) { return null; }
+}
+function connectBroker(url) {
+  const cl = mqtt.connect(url, { connectTimeout: 8000, reconnectPeriod: 2000, clean: true, clientId: 'lp_' + randomId() });
+  clients.push(cl);
+  return cl;
+}
+function firstBroker() {
+  return new Promise((resolve, reject) => {
+    let i = 0;
+    const tryNext = () => {
+      if (i >= BROKERS.length) return reject(new Error('no broker'));
+      const cl = connectBroker(BROKERS[i++]);
+      const t = setTimeout(() => { cl.end(true); tryNext(); }, 8000);
+      cl.once('connect', () => { clearTimeout(t); resolve(cl); });
+    };
+    tryNext();
+  });
+}
+
+// A conversation with one other player, shaped like a PeerJS DataConnection.
+function makeLink(client, keys, myId, peerId, sendTopic) {
+  const handlers = { data: [], close: [] };
+  let chain = Promise.resolve(), lastSeen = Date.now();
+  const link = {
+    open: true, peerId,
+    on(ev, fn) { handlers[ev].push(fn); },
+    send(msg) {
+      if (!link.open) return;
+      chain = chain.then(() => seal(keys.key, { ...msg, from: myId, to: peerId }))
+        .then((p) => client.publish(sendTopic, p, { qos: 1 })).catch(() => {});
+    },
+    receive(m) {
+      lastSeen = Date.now();
+      if (m.t === 'ping') return;
+      if (m.t === 'bye') return link.drop();
+      handlers.data.forEach((fn) => fn(m));
+    },
+    drop() {
+      if (!link.open) return;
+      link.open = false;
+      clearInterval(beat);
+      handlers.close.forEach((fn) => fn());
+    },
+    close() { if (link.open) { link.send({ t: 'bye' }); link.drop(); } },
+  };
+  const beat = setInterval(() => {
+    if (Date.now() - lastSeen > 15000) link.drop(); else link.send({ t: 'ping' });
+  }, 4000);
+  return link;
+}
+
 function genCode() {
   const chars = 'ABCDEFGHJKMNPQRSTUVWXYZ23456789', a = new Uint8Array(6);
   crypto.getRandomValues(a);
@@ -446,10 +524,13 @@ function lobbyView(view) {
 }
 function lobbyError(msg) { $('#lobby-error').textContent = msg; }
 function teardown() {
+  session++;
   clearTimeout(aiTimer);
   if (conn) { try { conn.close(); } catch (e) {} }
-  if (peer) { try { peer.destroy(); } catch (e) {} }
-  conn = peer = null; mode = null; game = null; host.state = null; roomCode = null;
+  const old = clients;
+  setTimeout(() => old.forEach((cl) => { try { cl.end(true); } catch (e) {} }), 400);
+  clients = [];
+  conn = null; mode = null; game = null; host.state = null; roomCode = null;
   queue = Promise.resolve(); busy = false;
   $('#win').hidden = true;
 }
@@ -458,36 +539,49 @@ function startGameScreen() {
   $('#reactions').hidden = mode === 'cpu';
 }
 
-function createRoom() {
-  if (typeof Peer === 'undefined') return lobbyError('Could not load the online library. Check your internet 🙏');
+async function createRoom() {
+  if (typeof mqtt === 'undefined') return lobbyError('Could not load the online library. Check your internet 🙏');
   lobbyError('');
+  teardown();
+  const my = session;
   mode = 'host'; myColors = ['red'];
   roomCode = genCode();
-  peer = new Peer(PEER_PREFIX + roomCode);
   lobbyView('joining');
-  peer.on('open', () => {
-    $('#room-code').textContent = roomCode;
-    lobbyView('wait');
-  });
-  peer.on('error', (e) => {
-    if (e.type === 'unavailable-id') { const p = peer; peer = null; p.destroy(); return createRoom(); }
-    if (e.type === 'network' || e.type === 'server-error' || e.type === 'socket-error') {
-      if (!game) { teardown(); lobbyView('menu'); lobbyError('Could not reach the matchmaking server. Try again!'); }
+  const keys = await roomKeys(roomCode);
+  let client;
+  try { client = await firstBroker(); } catch (e) {
+    if (my === session) { teardown(); lobbyView('menu'); lobbyError('Could not reach the game server. Check your internet and try again!'); }
+    return;
+  }
+  if (my !== session) return;
+  const hostId = randomId(), links = new Map();
+  client.subscribe(keys.topic + '/h', { qos: 1 });
+  client.on('message', async (topic, payload) => {
+    const m = await unseal(keys.key, payload);
+    if (!m || my !== session || typeof m.from !== 'string' || (m.to && m.to !== hostId)) return;
+    let link = links.get(m.from);
+    if (!link) {
+      if (m.t !== 'hello') return;
+      link = makeLink(client, keys, hostId, m.from, keys.topic + '/g');
+      links.set(m.from, link);
+      link.on('close', () => links.delete(m.from));
+      handleGuest(link);
     }
+    link.receive(m);
   });
-  peer.on('disconnected', () => { if (peer && !peer.destroyed) peer.reconnect(); });
-  peer.on('connection', handleGuest);
+  $('#room-code').textContent = roomCode;
+  lobbyView('wait');
 }
 
 function handleGuest(c) {
   let state = 'new';
-  const timer = setTimeout(() => { if (state !== 'ok') c.close(); }, 8000);
+  const timer = setTimeout(() => { if (state !== 'ok') c.drop(); }, 8000);
   c.on('data', async (d) => {
     if (state === 'checking' || state === 'dead') return;
     if (state === 'new') {
       state = 'checking';
       const name = d && d.t === 'hello' ? await checkProof(d.user, d.proof) : null;
-      const reject = (why) => { state = 'dead'; c.send({ t: 'reject', why }); setTimeout(() => c.close(), 400); };
+      const reject = (why) => { state = 'dead'; c.send({ t: 'reject', why }); setTimeout(() => c.drop(), 400); };
       if (!name) return reject('Bad login 🚫');
       if (conn && conn.open) return reject('Room is full 🙅');
       state = 'ok';
@@ -513,43 +607,67 @@ function handleGuest(c) {
   });
 }
 
-function joinRoom(code) {
+async function joinRoom(code) {
   code = code.trim().toUpperCase();
   if (!/^[A-Z0-9]{6}$/.test(code)) return lobbyError('Room codes are 6 letters/numbers 🙂');
-  if (typeof Peer === 'undefined') return lobbyError('Could not load the online library. Check your internet 🙏');
+  if (typeof mqtt === 'undefined') return lobbyError('Could not load the online library. Check your internet 🙏');
   lobbyError('');
+  teardown();
+  const my = session;
   mode = 'guest'; myColors = ['yellow']; roomCode = code;
   lobbyView('joining');
-  peer = new Peer();
-  const giveUp = setTimeout(() => {
-    if (!game) { teardown(); lobbyView('menu'); lobbyError('No answer from that room 🤔 Check the code?'); }
-  }, 15000);
-  peer.on('open', () => {
-    conn = peer.connect(PEER_PREFIX + code, { reliable: true });
-    conn.on('open', () => conn.send({ t: 'hello', user: me.name, proof: me.proof }));
-    conn.on('data', (d) => {
-      if (!d) return;
-      if (d.t === 'state') {
-        clearTimeout(giveUp);
-        if (!document.querySelector('#screen-game.active')) startGameScreen();
-        onState(d.s, d.sync);
-      } else if (d.t === 'react' && EMOJIS.includes(d.e)) { sfx.pop(); floatEmoji(d.e, 'red'); }
-      else if (d.t === 'reject') { clearTimeout(giveUp); teardown(); show('lobby'); lobbyView('menu'); lobbyError(d.why); }
+  const keys = await roomKeys(code);
+  if (my !== session) return;
+  const myId = randomId();
+  const fail = (msg) => { if (my !== session) return; teardown(); show('lobby'); lobbyView('menu'); lobbyError(msg); };
+  const giveUp = setTimeout(() => { if (!game) fail('No answer from that room 🤔 Is your friend still on the code screen?'); }, 20000);
+  let chosen = null;
+  const sayHello = async (cl) => {
+    if (chosen || my !== session) return;
+    cl.publish(keys.topic + '/h', await seal(keys.key, { t: 'hello', user: me.name, proof: me.proof, from: myId }), { qos: 1 });
+  };
+  // Try every broker at once; whichever one the host answers on wins.
+  for (const url of BROKERS) {
+    const cl = connectBroker(url);
+    let helloTimer;
+    cl.on('connect', () => {
+      cl.subscribe(keys.topic + '/g', { qos: 1 }, () => {
+        sayHello(cl);
+        clearInterval(helloTimer);
+        helloTimer = setInterval(() => (chosen || my !== session ? clearInterval(helloTimer) : sayHello(cl)), 3000);
+      });
     });
-    conn.on('close', () => {
-      if (mode === 'guest' && game) {
-        toast('Lost connection to host 😢', 4000);
-        const code = roomCode;
-        teardown(); show('lobby'); lobbyView('menu');
-        $('#join-code').value = code;
-        lobbyError('Connection dropped. Tap Join to hop back in!');
+    cl.on('message', async (topic, payload) => {
+      const m = await unseal(keys.key, payload);
+      if (!m || m.to !== myId || my !== session) return;
+      if (!chosen) {
+        chosen = cl;
+        clients.filter((o) => o !== cl).forEach((o) => o.end(true));
+        conn = makeLink(cl, keys, myId, m.from, keys.topic + '/h');
+        wireGuest(conn, giveUp);
       }
+      if (cl === chosen && conn && m.from === conn.peerId) conn.receive(m);
     });
+  }
+}
+
+function wireGuest(link, giveUp) {
+  link.on('data', (d) => {
+    if (d.t === 'state') {
+      clearTimeout(giveUp);
+      if (!document.querySelector('#screen-game.active')) startGameScreen();
+      onState(d.s, d.sync);
+    } else if (d.t === 'react' && EMOJIS.includes(d.e)) { sfx.pop(); floatEmoji(d.e, 'red'); }
+    else if (d.t === 'reject') { clearTimeout(giveUp); teardown(); show('lobby'); lobbyView('menu'); lobbyError(d.why); }
   });
-  peer.on('error', (e) => {
-    clearTimeout(giveUp);
-    teardown(); show('lobby'); lobbyView('menu');
-    lobbyError(e.type === 'peer-unavailable' ? 'No room with that code 🤔' : 'Connection trouble (' + e.type + '). Try again!');
+  link.on('close', () => {
+    if (mode === 'guest' && conn === link) {
+      const code = roomCode;
+      teardown(); show('lobby'); lobbyView('menu');
+      $('#join-code').value = code;
+      lobbyError('Connection dropped. Tap Join to hop back in!');
+      toast('Lost connection to host 😢', 4000);
+    }
   });
 }
 
