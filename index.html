@@ -1,0 +1,103 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="robots" content="noindex, nofollow">
+  <title>Ludo Party</title>
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🎲</text></svg>">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Fredoka:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <main>
+    <!-- LOGIN -->
+    <section id="screen-login" class="screen active">
+      <h1 class="logo"><span>L</span><span>U</span><span>D</span><span>O</span><em>party!</em></h1>
+      <p class="tagline">Roll. Race. Bonk your friends. 💥</p>
+      <form id="login-form" class="card" autocomplete="on">
+        <label>Secret name
+          <input id="login-user" autocomplete="username" spellcheck="false" required>
+        </label>
+        <label>Password
+          <input id="login-pass" type="password" autocomplete="current-password" required>
+        </label>
+        <button class="btn big red" type="submit">Let's go! 🚀</button>
+        <p id="login-error" class="error" role="alert"></p>
+      </form>
+    </section>
+
+    <!-- LOBBY -->
+    <section id="screen-lobby" class="screen">
+      <h1 class="logo small"><span>L</span><span>U</span><span>D</span><span>O</span><em>party!</em></h1>
+      <div class="card">
+        <p class="hello">Hey <b id="hello-name"></b>! 👋</p>
+        <div id="lobby-menu" class="stack">
+          <button id="btn-create" class="btn big red">🎉 Create a room</button>
+          <div class="or">or join your friend</div>
+          <div class="join-row">
+            <input id="join-code" placeholder="CODE" maxlength="6" autocomplete="off" spellcheck="false">
+            <button id="btn-join" class="btn yellow">Join 🔑</button>
+          </div>
+          <div class="or">or warm up</div>
+          <button id="btn-cpu" class="btn blue">🤖 Play vs Computer</button>
+        </div>
+        <div id="lobby-wait" class="stack center" hidden>
+          <p>Your room code</p>
+          <div id="room-code" class="code"></div>
+          <button id="btn-copy" class="btn green">📋 Copy invite link</button>
+          <p class="waiting">Waiting for your friend<span class="dots"><i>.</i><i>.</i><i>.</i></span></p>
+          <button id="btn-cancel" class="btn ghost">Cancel</button>
+        </div>
+        <div id="lobby-joining" class="stack center" hidden>
+          <div class="spinner">🎲</div>
+          <p>Knocking on the door…</p>
+          <button id="btn-cancel-join" class="btn ghost">Cancel</button>
+        </div>
+        <p id="lobby-error" class="error" role="alert"></p>
+        <button id="btn-logout" class="link">Log out</button>
+      </div>
+    </section>
+
+    <!-- GAME -->
+    <section id="screen-game" class="screen">
+      <header class="game-top">
+        <button id="btn-leave" class="icon-btn" title="Leave game" aria-label="Leave game">✕</button>
+        <div id="players" class="players"></div>
+        <button id="btn-mute" class="icon-btn" title="Sound on/off" aria-label="Sound on/off">🔊</button>
+      </header>
+      <div id="board-wrap" class="board-wrap">
+        <div id="board" class="board">
+          <svg id="board-svg" viewBox="0 0 15 15" aria-hidden="true"></svg>
+          <div id="tokens"></div>
+        </div>
+      </div>
+      <div class="controls">
+        <button id="dice" class="dice-btn" aria-label="Roll the dice">
+          <div id="dice-cube" class="dice"></div>
+        </button>
+        <p id="status" class="status" aria-live="polite"></p>
+      </div>
+      <div id="reactions" class="reactions"></div>
+    </section>
+  </main>
+
+  <div id="win" class="overlay" hidden>
+    <div class="card win-card">
+      <div class="trophy">🏆</div>
+      <h2 id="win-title"></h2>
+      <p id="win-sub"></p>
+      <button id="btn-again" class="btn big green">Play again 🔁</button>
+      <button id="btn-win-leave" class="btn ghost">Back to lobby</button>
+    </div>
+  </div>
+  <div id="toast" class="toast"></div>
+  <div id="fx"></div>
+
+  <script src="https://unpkg.com/peerjs@1.5.4/dist/peerjs.min.js"></script>
+  <script src="rules.js"></script>
+  <script src="game.js"></script>
+</body>
+</html>
