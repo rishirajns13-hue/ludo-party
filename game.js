@@ -7,8 +7,8 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
    Only sha256(proof) is stored, where proof = sha256(lower(name) + ':' + password).
    A joining friend must send the proof itself, which can't be derived from this file. */
 const ACCOUNTS = {
-  mangopirate: { name: 'MangoPirate', hash: 'eac948d977dc8b1913f1ed28eddafb4956390931e6be0b5e446ddfc9c8ba65ad' },
-  cosmicsamosa: { name: 'CosmicSamosa', hash: '6e83e1e434ab07dd2b66571b5b7fc9e1a2987cc0d81713344047a9880c0ce4be' },
+  'panjara kunju': { name: 'Panjara Kunju', hash: '8efc12f3e0136b0273c8a696fc0bded3c3ea73770334b251b77c2e7cdce92f3a' },
+  ammu: { name: 'Ammu', hash: 'eeb63f1ee20923f64678e8aaba9d54eb1bb6fffa6dad7ded0345dd1dea393890' },
 };
 const PEER_PREFIX = 'ludo-party-rr7-';
 const EMOJIS = ['😂', '🔥', '😭', '👏', '😈', '🫡'];
