@@ -1,5 +1,5 @@
 'use strict';
-/* Bonk Club shared core: login, your look (avatar + colours), icons and little effects.
+/* Sweet Revenge shared core: login, your look (avatar + colours), icons and little effects.
    Loaded first on every page; each page adds its own game script after it. */
 const $ = (sel) => document.querySelector(sel);
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));

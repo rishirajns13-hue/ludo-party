@@ -1,6 +1,6 @@
-# 💥 Bonk Club
+# 🍦 Sweet Revenge
 
-Tiny games for big goofballs. A private little game collection for a few friends. It's a static site (GitHub Pages), and players connect through encrypted messages relayed by a public MQTT broker. Built for laptops first, and it works on phones too.
+A private little game collection for a few friends. It's a static site (GitHub Pages), and players connect through encrypted messages relayed by a public MQTT broker. Built for laptops first, and it works on phones too.
 
 ## Getting in
 Open the site and log in with your secret name and password. Ask the person who set it up for these. You stay logged in on that device. Pick a game from the home screen, or paste a friend's room code into **Got a code from a friend?** and you'll land in the right game.
@@ -35,7 +35,7 @@ Tap your avatar to pick an avatar and a colour palette (Sunset, Lagoon or Lemona
 `shared/core.js` stores only `sha256(sha256(name:password))`. When a friend joins, their browser sends the inner hash, which can't be worked out from the code. The host checks it and drops anyone who can't prove they know a password.
 
 ## Project layout
-- `index.html`, `hub.js`, `hub.css`: the Bonk Club front door (login and game picker)
+- `index.html`, `hub.js`, `hub.css`: the Sweet Revenge front door, with login and the game picker. The logo is an inline SVG in `index.html`.
 - `shared/`: design system (`base.css`), login, icons and profile (`core.js`), networking (`net.js`)
 - `doodle.html`, `doodle/`: Doodle Duel (`logic.js` is the pure, tested part; `words.js` has the word packs)
 - `ludo.html`, `ludo/`: Ludo (`rules.js` is the pure, tested part)

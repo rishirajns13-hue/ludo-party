@@ -1,5 +1,5 @@
 'use strict';
-/* Bonk Club networking: rooms are encrypted conversations relayed by public MQTT brokers. */
+/* Sweet Revenge networking: rooms are encrypted conversations relayed by public MQTT brokers. */
 /* ================= networking (encrypted messages via public MQTT brokers) =================
    Everyone connects *out* to a broker over secure WebSockets, so it works on any network
    (mobile data, CGNAT, office Wi-Fi). Topic and AES key are derived from the room code, so

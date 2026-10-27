@@ -1,9 +1,13 @@
-/* Bonk Club hub. Laptop first: a wide two-up of game cards; phones get one column. */
+/* Sweet Revenge hub. Laptop first: a wide two-up of game cards; phones get one column. */
 #screen-login.active { align-items: center; }
 .screen.hub.active { max-width: 1080px; justify-content: flex-start; gap: 18px; padding-block: 8px 28px; }
 .hub-top { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
-.hub-top .logo.small { font-size: 52px; }
-.hub-top .logo.small em { position: static; align-self: center; margin-left: 10px; font-size: 18px; }
+/* the logo is an inline SVG (see the <symbol id="logo"> in index.html) */
+svg.defs { position: absolute; width: 0; height: 0; overflow: hidden; }
+.brand { margin: 0; line-height: 0; }
+.brand svg { display: block; width: min(560px, 88vw); height: auto; overflow: visible; filter: drop-shadow(0 6px 0 #2b214033); animation: brand-bob 3s ease-in-out infinite; }
+.brand.small svg { width: auto; height: 76px; animation: none; filter: none; }
+@keyframes brand-bob { 50% { transform: translateY(-6px) rotate(-1deg); } }
 .hello { font-size: clamp(26px, 3.2vw, 38px); }
 
 .resume-banner {
@@ -62,8 +66,8 @@
 
 @media (max-width: 760px) {
   .games, .soon-list { grid-template-columns: minmax(0, 1fr); }
-  .hub-top .logo.small { font-size: 40px; }
+  .brand.small svg { height: 56px; }
   .game-card .art { height: 150px; }
   .mini-board { width: 108px; height: 108px; }
 }
-@media (prefers-reduced-motion: reduce) { .resume-banner { animation: none; } }
+@media (prefers-reduced-motion: reduce) { .resume-banner, .brand svg { animation: none; } }

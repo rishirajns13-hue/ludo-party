@@ -1,5 +1,5 @@
 'use strict';
-/* Bonk Club front door: log in, pick a game, or jump in with a friend's code. */
+/* Sweet Revenge front door: log in, pick a game, or jump in with a friend's code. */
 const sfx = { pop() {} }; // the hub stays quiet; games bring their own sounds
 
 const GAME_FOR_CODE = (code) => (code[0] === 'D' ? 'doodle.html' : 'ludo.html');
