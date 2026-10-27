@@ -17,7 +17,8 @@ There's also **Practice against a bot**.
 - **Reactions:** tap the smiley button and pick an emoji, or hold it, slide and let go.
 - **Stickers:** the big stickers in the chat slam onto everyone's screen.
 - **Voice notes:** hold the mic button while you talk and let go to send. It plays on the other phones. The browser asks for microphone access the first time.
-- If someone drops out, a bot plays for them until they rejoin with the same code.
+- If someone drops out, a bot plays for them until they come back. If you close the app mid-game, the home screen shows **Back to your game**.
+- If the host leaves, the next player in seat order takes over hosting automatically and the game carries on. Nobody has to keep the app open for the others.
 
 ## Rules
 - You need a 6 to bring a piece out. Rolling a 6 gives you another roll, but three 6s in a row skips your turn.
@@ -29,7 +30,9 @@ There's also **Practice against a bot**.
 Tap your avatar on the home screen to pick an avatar and a colour palette (Sunset, Lagoon or Lemonade). The all-time score against your friends is kept on each device.
 
 ## How logins work
-`game.js` stores only `sha256(sha256(name:password))`. When a friend joins, their browser sends the inner hash, which can't be worked out from the code. The host checks it and drops anyone who can't prove they know a password. Rooms take at most 4 players.
+`game.js` stores only `sha256(sha256(name:password))`. When a friend joins, their browser sends the inner hash, which can't be worked out from the code. The host checks it and drops anyone who can't prove they know a password.
+
+The host's browser runs the game; everyone else keeps a copy of the latest state. When the host's connection closes, the remaining players agree on the next host (first in seat order) and reconnect to it on a fresh channel, so an old host coming back can't clash with the new one. Rooms take at most 4 players.
 
 ## Running locally
 Serve the folder with any static server, for example `npx serve .`, and open it in two tabs. Run the rules tests with `node --test`.

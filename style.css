@@ -438,3 +438,5 @@ button.seat { font-family: inherit; color: inherit; }
   .logo span, .chip.active, .trophy, .dancers i, .token.can .tb, .token.dizzy .tb, .dice-btn.ready, .dice-btn.ready::after { animation: none; }
   .screen.active, .sheet, .overlay { animation: none; }
 }
+.btn.resume { background: var(--green); color: #fff; animation: bob 1.4s ease-in-out infinite; }
+.btn.resume span { letter-spacing: 2px; }

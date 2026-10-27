@@ -10,7 +10,7 @@
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Fredoka:wght@400;500;600;700&family=Nunito:wght@600;700;800&display=swap" rel="stylesheet">
-  <link rel="stylesheet" href="style.css?v=4">
+  <link rel="stylesheet" href="style.css?v=5">
 </head>
 <body class="pal-sunset">
   <main>
@@ -38,6 +38,7 @@
       </header>
       <p id="hello" class="hello"></p>
       <div id="rival" class="card rival"></div>
+      <button id="btn-resume" class="btn big resume" type="button" data-icon="play" hidden>Back to your game · <span id="resume-code"></span></button>
       <button id="btn-create" class="btn big cta" type="button" data-icon="dice">New game</button>
       <div class="join-row">
         <input id="join-code" placeholder="Got a code?" aria-label="Room code" maxlength="6" autocomplete="off" spellcheck="false">
@@ -144,8 +145,8 @@
   <div id="fx"></div>
 
   <script src="https://unpkg.com/mqtt@5.10.1/dist/mqtt.min.js"></script>
-  <script src="rules.js?v=4"></script>
-  <script src="game.js?v=4"></script>
-  <script src="social.js?v=4"></script>
+  <script src="rules.js?v=5"></script>
+  <script src="game.js?v=5"></script>
+  <script src="social.js?v=5"></script>
 </body>
 </html>

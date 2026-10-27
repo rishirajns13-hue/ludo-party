@@ -193,6 +193,8 @@ let busy = false;
 let queue = Promise.resolve();
 let aiTimer = null;
 let offline = new Set();  // colours whose player dropped mid-game (a bot covers for them)
+let hostColor = null;     // guest: which colour is hosting, so we know who left if the link drops
+let latest = null;        // guest: newest state from the host (game lags it while animating)
 
 const isMine = (color) => myColors.includes(color);
 const nameOf = (color) => (game && game.names[color]) || color;
@@ -221,7 +223,7 @@ const host = {
     const s = this.state;
     if (!s || !msg) return;
     if (msg.t === 'restart') {
-      if (color === s.players[0] && s.phase === 'over') this.start(this.cfg);
+      if (s.phase === 'over') this.start(this.cfg); // only the host's own button sends this
       return;
     }
     if (s.phase === 'over' || R.current(s) !== color) return;
@@ -237,9 +239,10 @@ const host = {
   },
   push(sync = false) {
     onState(this.state, sync);
-    if (room) room.seats.forEach((seat) => seat.link && seat.link.open && seat.link.send({ t: 'state', s: this.state, sync, you: seat.color }));
+    if (room) room.seats.forEach((seat) => seat.link && seat.link.open && seat.link.send(stateMsg(seat, sync)));
   },
 };
+const stateMsg = (seat, sync) => ({ t: 'state', s: host.state, sync, you: seat.color, hostColor: myColors[0], epoch: room.epoch });
 function randomDie() {
   const a = new Uint8Array(1);
   do crypto.getRandomValues(a); while (a[0] >= 252);
@@ -388,10 +391,13 @@ async function applyState(s, sync) {
   }
   busy = true;
   renderControls();
+  const my = session;
   for (const ev of s.events) {
+    if (my !== session) return;
     if (ev.type === 'roll') await animateRoll(ev);
     else if (ev.type === 'move') await animateMove(ev);
   }
+  if (my !== session) return; // left or switched host while animating
   const wasOver = game.phase === 'over';
   game = s;
   display = JSON.parse(JSON.stringify(s.tokens));
@@ -484,7 +490,7 @@ function maybeAI() {
     if (busy || !game || R.current(game) !== c) return;
     if (game.phase === 'roll') host.handle(c, { t: 'roll' });
     else if (game.phase === 'move') host.handle(c, { t: 'move', i: aiPick(game) });
-  }, offline.has(c) ? 2500 : game.phase === 'roll' ? 750 : 550);
+  }, offline.has(c) ? 5000 : game.phase === 'roll' ? 750 : 550); // give a dropped player time to reconnect
 }
 function aiPick(s) {
   const color = R.current(s), team = R.teamOf(s, color);
@@ -600,7 +606,7 @@ function teardown() {
   const old = clients;
   setTimeout(() => old.forEach((cl) => { try { cl.end(true); } catch (e) {} }), 400);
   clients = [];
-  conn = null; mode = null; game = null; host.state = null; room = null; hostName = '';
+  conn = null; mode = null; game = null; host.state = null; room = null; hostName = ''; hostColor = null; latest = null;
   queue = Promise.resolve(); busy = false; offline = new Set();
   $('#win').hidden = true;
   $('#toast').classList.remove('show');
@@ -610,8 +616,11 @@ function goHome(error = '') {
   teardown();
   show('home');
   renderHome();
+  renderResume();
   $('#home-error').textContent = error;
 }
+// Leaving on purpose: don't offer "Back to your game" afterwards.
+function leaveToHome() { forgetRoom(); goHome(); }
 function startGameScreen() {
   show('game');
   resetSocial();
@@ -673,39 +682,67 @@ function renderJoining(code) {
   $('#room-error').textContent = '';
 }
 
-/* ---------- host ---------- */
-async function createRoom() {
-  if (typeof mqtt === 'undefined') return goHome('Could not load the online library. Check your internet 🙏');
-  teardown();
-  const my = session;
-  mode = 'host'; myColors = ['red'];
-  room = { code: genCode(), seats: [{ name: me.name, avatar: myAvatar() }], teams: false, started: false };
-  hostName = me.name;
-  $('#room-error').textContent = '';
-  renderRoom(roomPayload());
-  show('room');
-  const keys = await roomKeys(room.code);
+/* ---------- host ----------
+   The room code gives the topic and key. `epoch` counts host handovers: each host listens on
+   its own epoch's topics, so a host that dropped out and came back can't talk over the new one. */
+const PROBE = 6; // how many epochs a joining player listens on
+const hostTopic = (keys, e) => `${keys.topic}/h${e}`;
+const guestTopic = (keys, e) => `${keys.topic}/g${e}`;
+
+async function listenAsHost() {
+  const my = session, keys = await roomKeys(room.code);
   let client;
   try { client = await firstBroker(); } catch (e) {
     if (my === session) goHome('Could not reach the game server. Check your internet and try again!');
     return;
   }
   if (my !== session) return;
-  const hostId = randomId(), links = new Map();
-  client.subscribe(keys.topic + '/h', { qos: 1 });
+  const hostId = randomId(), links = new Map(), epoch = room.epoch;
+  client.subscribe(hostTopic(keys, epoch), { qos: 1 });
   client.on('message', async (topic, payload) => {
     const m = await unseal(keys.key, payload);
     if (!m || my !== session || typeof m.from_ !== 'string' || (m.to && m.to !== hostId)) return;
     let link = links.get(m.from_);
     if (!link) {
       if (m.t !== 'hello') return;
-      link = makeLink(client, keys, hostId, m.from_, keys.topic + '/g');
+      link = makeLink(client, keys, hostId, m.from_, guestTopic(keys, epoch));
       links.set(m.from_, link);
       link.on('close', () => links.delete(m.from_));
       handleGuest(link);
     }
     link.receive(m);
   });
+}
+
+async function createRoom() {
+  if (typeof mqtt === 'undefined') return goHome('Could not load the online library. Check your internet 🙏');
+  teardown();
+  mode = 'host'; myColors = ['red'];
+  room = { code: genCode(), epoch: 0, seats: [{ name: me.name, avatar: myAvatar() }], teams: false, started: false };
+  hostName = me.name;
+  $('#room-error').textContent = '';
+  renderRoom(roomPayload());
+  show('room');
+  await listenAsHost();
+}
+
+// The host left mid-game: the first player still here (in seat order) carries on hosting
+// from the last state everyone saw. The others reconnect to them on the next epoch.
+function takeOverAsHost(code, epoch, s) {
+  const mine = myColors[0];
+  teardown();
+  mode = 'host'; myColors = [mine]; hostName = me.name;
+  room = {
+    code, epoch, started: true, teams: !!s.teams,
+    seats: s.players.map((c) => ({ color: c, name: s.names[c], avatar: (s.avatars || {})[c] || '🙂', bot: (s.bots || []).includes(c) })),
+  };
+  offline = new Set(room.seats.filter((x) => !x.bot && x.color !== mine).map((x) => x.color));
+  host.cfg = { players: s.players, names: s.names, avatars: s.avatars, bots: s.bots, teams: !!s.teams };
+  host.state = s;
+  onState(s, true);
+  rememberRoom(code);
+  toast("The host left, so you're hosting now 👑", 3500);
+  listenAsHost();
 }
 
 function handleGuest(c) {
@@ -730,15 +767,15 @@ function handleGuest(c) {
       const old = seat.link;
       seat.link = c;
       if (old && old !== c) old.drop();
-      seat.avatar = AVATARS.includes(d.avatar) ? d.avatar : '🙂';
+      seat.avatar = AVATARS.includes(d.avatar) ? d.avatar : seat.avatar || '🙂';
       state = 'ok';
       clearTimeout(timer);
       sfx.pop();
       if (room.started) {
         offline.delete(seat.color);
         sendPresence();
-        c.send({ t: 'state', s: host.state, sync: true, you: seat.color });
-        toast(`${name} is back 👋`);
+        c.send(stateMsg(seat, true));
+        toast(`${name.split(' ').pop()} is back 👋`);
       } else {
         sendRoom();
         toast(`${name} joined 🎉`);
@@ -789,6 +826,7 @@ function startOnline() {
   myColors = [players[0]];
   const by = (f) => Object.fromEntries(room.seats.map((s) => [s.color, f(s)]));
   startGameScreen();
+  rememberRoom(room.code);
   host.start({
     players, names: by((s) => s.name), avatars: by((s) => s.avatar),
     bots: room.seats.filter((s) => s.bot).map((s) => s.color), teams: room.teams && n === 4,
@@ -796,30 +834,44 @@ function startOnline() {
 }
 
 /* ---------- guest ---------- */
-async function joinRoom(code) {
+// resume: we were already in this game (the host changed), so stay on the game screen.
+async function joinRoom(code, { minEpoch = 0, resume = false } = {}) {
   code = code.trim().toUpperCase();
   if (!/^[A-Z0-9]{6}$/.test(code)) { $('#home-error').textContent = 'Room codes are 6 letters or numbers 🙂'; return; }
   if (typeof mqtt === 'undefined') { $('#home-error').textContent = 'Could not load the online library. Check your internet 🙏'; return; }
   teardown();
   const my = session;
   mode = 'guest'; myColors = [];
-  renderJoining(code);
-  show('room');
+  if (resume) { $('#status').textContent = 'Reconnecting…'; $('#dice').disabled = true; }
+  else { renderJoining(code); show('room'); }
   const keys = await roomKeys(code);
   if (my !== session) return;
-  const myId = randomId();
-  const giveUp = setTimeout(() => { if (my === session && !conn) { goHome('No answer from that room 🤔 Is your friend still in it?'); $('#join-code').value = code; } }, 20000);
-  let chosen = null;
+  const myId = randomId(), epochs = Array.from({ length: PROBE }, (_, k) => minEpoch + k);
+  const giveUp = setTimeout(() => {
+    if (my === session && !conn) { goHome('No answer from that room 🤔 Is anyone still in it?'); $('#join-code').value = code; }
+  }, resume ? 30000 : 20000);
+  let chosen = null, pickTimer = null;
+  const offers = [];
   const sayHello = async (cl) => {
     if (chosen || my !== session) return;
-    cl.publish(keys.topic + '/h', await seal(keys.key, { t: 'hello', user: me.name, proof: me.proof, avatar: myAvatar(), from_: myId }), { qos: 1 });
+    const p = await seal(keys.key, { t: 'hello', user: me.user || me.name, proof: me.proof, avatar: myAvatar(), from_: myId });
+    epochs.forEach((e) => cl.publish(hostTopic(keys, e), p, { qos: 1 }));
   };
-  // Try every broker at once; whichever one the host answers on wins.
+  // Wait a moment after the first answer and go with the newest host, in case an old one is still around.
+  const pick = () => {
+    if (chosen || my !== session) return;
+    chosen = offers.reduce((a, b) => (b.epoch > a.epoch ? b : a));
+    clients.filter((o) => o !== chosen.cl).forEach((o) => o.end(true));
+    conn = makeLink(chosen.cl, keys, myId, chosen.from, hostTopic(keys, chosen.epoch));
+    wireGuest(conn, giveUp, code, chosen.epoch);
+    chosen.queue.forEach((m) => conn.receive(m));
+  };
+  // Try every broker at once; whichever one a host answers on wins.
   for (const url of BROKERS) {
     const cl = connectBroker(url);
     let helloTimer;
     cl.on('connect', () => {
-      cl.subscribe(keys.topic + '/g', { qos: 1 }, () => {
+      cl.subscribe(epochs.map((e) => guestTopic(keys, e)), { qos: 1 }, () => {
         sayHello(cl);
         clearInterval(helloTimer);
         helloTimer = setInterval(() => (chosen || my !== session ? clearInterval(helloTimer) : sayHello(cl)), 3000);
@@ -828,18 +880,20 @@ async function joinRoom(code) {
     cl.on('message', async (topic, payload) => {
       const m = await unseal(keys.key, payload);
       if (!m || m.to !== myId || my !== session) return;
-      if (!chosen) {
-        chosen = cl;
-        clients.filter((o) => o !== cl).forEach((o) => o.end(true));
-        conn = makeLink(cl, keys, myId, m.from_, keys.topic + '/h');
-        wireGuest(conn, giveUp, code);
+      const epoch = +topic.slice(topic.lastIndexOf('/g') + 2);
+      if (chosen) {
+        if (cl === chosen.cl && epoch === chosen.epoch && conn && m.from_ === conn.peerId) conn.receive(m);
+        return;
       }
-      if (cl === chosen && conn && m.from_ === conn.peerId) conn.receive(m);
+      let offer = offers.find((o) => o.cl === cl && o.epoch === epoch && o.from === m.from_);
+      if (!offer) offers.push((offer = { cl, epoch, from: m.from_, queue: [] }));
+      offer.queue.push(m);
+      if (!pickTimer) pickTimer = setTimeout(pick, 1200);
     });
   }
 }
 
-function wireGuest(link, giveUp, code) {
+function wireGuest(link, giveUp, code, epoch) {
   link.on('data', (d) => {
     if (d.t === 'room') {
       clearTimeout(giveUp);
@@ -847,21 +901,41 @@ function wireGuest(link, giveUp, code) {
       if (!game && Array.isArray(d.seats)) { renderRoom(d); show('room'); }
     } else if (d.t === 'state') {
       clearTimeout(giveUp);
-      if (!(d.you in R.START)) return;
+      if (!(d.you in R.START) || !d.s || !d.s.names) return;
       myColors = [d.you];
+      latest = d.s;
+      if (d.hostColor in R.START) { hostColor = d.hostColor; hostName = d.s.names[hostColor] || hostName; }
       if (!document.querySelector('#screen-game.active')) startGameScreen();
+      rememberRoom(code);
       onState(d.s, d.sync);
     } else if (d.t === 'social' && d.m) receiveSocial(d.m);
     else if (d.t === 'presence' && Array.isArray(d.offline)) { offline = new Set(d.offline); if (game) renderPlayers(); }
     else if (d.t === 'reject') { clearTimeout(giveUp); goHome(String(d.why || 'Could not join')); }
   });
   link.on('close', () => {
-    if (mode === 'guest' && conn === link) {
-      goHome('Connection dropped. Tap Join to hop back in!');
-      $('#join-code').value = code;
-      toast('Lost connection to the host 😢', 4000);
-    }
+    if (mode !== 'guest' || conn !== link) return;
+    if (latest && hostColor) return handOver(code, epoch, latest);
+    goHome('Connection dropped. Tap Join to hop back in!');
+    $('#join-code').value = code;
   });
+}
+
+// Everyone runs the same choice, so they all agree on who hosts next.
+function handOver(code, epoch, s) {
+  const stay = s.players.filter((c) => c !== hostColor && !(s.bots || []).includes(c) && !offline.has(c));
+  if (!stay.length) return goHome('The host left the game.');
+  if (stay[0] === myColors[0]) return takeOverAsHost(code, epoch + 1, s);
+  toast(`The host left. Moving the game to ${shortName(stay[0])}…`, 3500);
+  joinRoom(code, { minEpoch: epoch + 1, resume: true });
+}
+
+/* ---------- getting back into a game after closing the app ---------- */
+function rememberRoom(code) { store.set('ludo-lastroom', { code, at: Date.now() }); }
+function forgetRoom() { store.del('ludo-lastroom'); }
+function renderResume() {
+  const last = store.get('ludo-lastroom', null), fresh = last && Date.now() - last.at < 3 * 3600e3;
+  $('#btn-resume').hidden = !fresh;
+  if (fresh) $('#resume-code').textContent = last.code;
 }
 
 function startCpu() {
@@ -891,7 +965,7 @@ $('#login-form').addEventListener('submit', async (e) => {
     sfx.sad();
     return;
   }
-  me = { name, proof };
+  me = { name, proof, user: user.trim().toLowerCase() };
   store.set('ludo-me', me); // stay logged in on this device
   sfx.home();
   enterHome();
@@ -911,7 +985,8 @@ $('#btn-create').onclick = () => { sfx.pop(); createRoom(); };
 $('#btn-join').onclick = () => { sfx.pop(); joinRoom($('#join-code').value); };
 $('#join-code').addEventListener('keydown', (e) => { if (e.key === 'Enter') joinRoom(e.target.value); });
 $('#btn-cpu').onclick = () => { sfx.pop(); startCpu(); };
-$('#btn-room-back').onclick = () => goHome();
+$('#btn-room-back').onclick = leaveToHome;
+$('#btn-resume').onclick = () => { sfx.pop(); const last = store.get('ludo-lastroom', null); if (last) joinRoom(last.code); };
 $('#btn-start').onclick = () => { sfx.pop(); startOnline(); };
 $('#teams').onchange = (e) => { if (mode === 'host' && room) { room.teams = e.target.checked; sendRoom(); } };
 $('#seats').addEventListener('click', (e) => {
@@ -937,11 +1012,11 @@ $('#btn-share').onclick = async () => {
   catch (e) { prompt('Copy this link:', link); }
 };
 const leave = () => {
-  if (mode !== 'cpu' && game && game.phase !== 'over' && !confirm('Leave the game? Everyone else will be left hanging 😢')) return;
-  goHome();
+  if (mode !== 'cpu' && game && game.phase !== 'over' && !confirm('Leave the game? A bot will play for you until you come back.')) return;
+  leaveToHome();
 };
 $('#btn-leave').onclick = leave;
-$('#btn-win-leave').onclick = () => goHome();
+$('#btn-win-leave').onclick = leaveToHome;
 $('#btn-again').onclick = () => { if (game) host.handle(game.players[0], { t: 'restart' }); };
 $('#btn-mute').onclick = (e) => setIcon(e.currentTarget, sfx.toggle() ? 'mute' : 'volume');
 $('#dice').onclick = () => { if (canRoll()) { $('#dice').disabled = true; act({ t: 'roll' }); } };
@@ -961,6 +1036,9 @@ $('#btn-logout').onclick = () => {
   $('#login-pass').value = '';
   show('login');
 };
+// Closing the app: say goodbye so the others react now instead of after the 15 s heartbeat.
+// teardown() clears `room` first, so the host doesn't announce anyone as offline on the way out.
+addEventListener('pagehide', () => { if (mode === 'host' || mode === 'guest') teardown(); });
 
 // Scripts run in order, so social.js is ready by the time the page has loaded.
 document.addEventListener('DOMContentLoaded', () => {
@@ -970,5 +1048,5 @@ document.addEventListener('DOMContentLoaded', () => {
   buildDice();
   showDice(6, false);
   const saved = store.get('ludo-me', null);
-  if (saved) checkProof(saved.name, saved.proof).then((name) => { if (name) { me = { name, proof: saved.proof }; enterHome(); } });
+  if (saved) checkProof(saved.user || saved.name, saved.proof).then((name) => { if (name) { me = { name, proof: saved.proof, user: saved.user }; enterHome(); } });
 });
