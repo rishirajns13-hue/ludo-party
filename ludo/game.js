@@ -1,30 +1,11 @@
 'use strict';
 const R = window.LudoRules;
-const $ = (sel) => document.querySelector(sel);
-const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
-/* ================= accounts =================
-   Only sha256(proof) is stored, where proof = sha256(lower(name) + ':' + password).
-   A joining friend must send the proof itself, which can't be derived from this file. */
-const ACCOUNTS = {
-  'panchara kunju': { name: 'Panchara Kunju', hash: '1c760216a90d9924ba7ea7afe921cce796b25e5a6e4ba08a27dcb8d39ddab814' },
-  ammu: { name: 'Ammu', hash: 'be56b7ac72bc7a13c0c7134ac0275310dd0c56a004adc0975a72623c2cc35210' },
-};
 const COLORS = { red: '#ff5a5f', green: '#2bc48a', yellow: '#ffc233', blue: '#4d9de0' };
 const INK = '#2b2140';
 // Seat order → colours. Two players sit opposite each other; teams pair seats 1+3 and 2+4.
 const COLOR_SETS = { 2: ['red', 'yellow'], 3: ['red', 'green', 'yellow'], 4: ['red', 'green', 'yellow', 'blue'] };
 const BOT_NAMES = ['Bot Bonky', 'Robo Rani', 'Chip', 'Dice-o-tron'];
-
-async function sha256(text) {
-  const buf = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(text));
-  return [...new Uint8Array(buf)].map((b) => b.toString(16).padStart(2, '0')).join('');
-}
-const makeProof = (user, pass) => sha256(user.trim().toLowerCase() + ':' + pass);
-async function checkProof(user, proof) {
-  const acc = typeof user === 'string' && ACCOUNTS[user.trim().toLowerCase()];
-  return acc && typeof proof === 'string' && acc.hash === (await sha256(proof)) ? acc.name : null;
-}
 
 /* ================= board geometry (cell units, 15x15) ================= */
 const TRACK = [];
@@ -138,34 +119,6 @@ const sfx = (() => {
 })();
 
 /* ================= effects ================= */
-function confetti(x, y, n = 30, spread = 220, palette = Object.values(COLORS).concat('#fff', '#8f6bff')) {
-  const fx = $('#fx');
-  for (let k = 0; k < n; k++) {
-    const p = document.createElement('i');
-    p.className = 'confetti';
-    p.style.left = x + 'px'; p.style.top = y + 'px';
-    p.style.background = palette[k % palette.length];
-    p.style.setProperty('--dx', (Math.random() - 0.5) * spread * 2 + 'px');
-    p.style.setProperty('--dy', (Math.random() * 1.2 - 0.7) * spread + 'px');
-    p.style.setProperty('--rot', Math.random() * 720 + 'deg');
-    p.style.animationDuration = 0.9 + Math.random() * 0.8 + 's';
-    fx.appendChild(p);
-    setTimeout(() => p.remove(), 1800);
-  }
-}
-function bigConfetti() {
-  for (let k = 0; k < 5; k++) setTimeout(() => confetti(Math.random() * innerWidth, innerHeight * 0.3, 50, 320), k * 250);
-}
-let toastTimer;
-function toast(msg, ms = 1900) {
-  const t = $('#toast');
-  t.textContent = msg;
-  t.classList.add('show');
-  clearTimeout(toastTimer);
-  toastTimer = setTimeout(() => t.classList.remove('show'), ms);
-}
-function retrigger(el, cls) { el.classList.remove(cls); void el.offsetWidth; el.classList.add(cls); }
-function centerOf(el) { const r = el.getBoundingClientRect(); return [r.left + r.width / 2, r.top + r.height / 2]; }
 function boardLabel(text) { const l = $('#board-label'); l.textContent = text; retrigger(l, 'show'); }
 function floatEmoji(e, color) {
   const anchor = isMine(color) ? $('#dice') : chipFor(color) || $('#board-wrap');
@@ -178,10 +131,8 @@ function floatEmoji(e, color) {
   $('#fx').appendChild(el);
   setTimeout(() => el.remove(), 1900);
 }
-function escapeHtml(s) { return String(s).replace(/[&<>"']/g, (ch) => `&#${ch.charCodeAt(0)};`); }
 
 /* ================= app state ================= */
-let me = null;            // { name, proof }
 let mode = null;          // 'host' | 'guest' | 'cpu'
 let myColors = [];
 let conn = null;          // guest: link to the host
@@ -192,6 +143,7 @@ let display = null;       // token positions currently drawn (lags game during a
 let busy = false;
 let queue = Promise.resolve();
 let aiTimer = null;
+let session = 0;          // bumped on teardown so stale async work can bail out
 let offline = new Set();  // colours whose player dropped mid-game (a bot covers for them)
 let hostColor = null;     // guest: which colour is hosting, so we know who left if the link drops
 let latest = null;        // guest: newest state from the host (game lags it while animating)
@@ -204,7 +156,9 @@ const isBot = (color) => !!(game && game.bots && game.bots.includes(color));
 
 function show(screen) {
   document.querySelectorAll('.screen').forEach((s) => s.classList.toggle('active', s.id === 'screen-' + screen));
+  document.body.classList.toggle('in-game', screen === 'game');
   if (screen !== 'game') { closeChat(); closeWheel(); }
+  dockChat();
 }
 
 /* ================= host controller (source of truth) ================= */
@@ -510,92 +464,6 @@ function aiPick(s) {
   return best;
 }
 
-/* ================= networking (encrypted messages via public MQTT brokers) =================
-   Everyone connects *out* to a broker over secure WebSockets, so it works on any network
-   (mobile data, CGNAT, office Wi-Fi). Topic and AES key are derived from the room code, so
-   the broker only ever sees a hashed topic and ciphertext. The host's browser runs the game;
-   guests send it their moves and chat, and it relays to everyone else. */
-const BROKERS = ['wss://broker.emqx.io:8084/mqtt', 'wss://broker.hivemq.com:8884/mqtt'];
-const enc = new TextEncoder(), dec = new TextDecoder();
-let clients = [];         // open MQTT clients
-let session = 0;          // bumped on teardown so stale async work can bail out
-const randomId = () => [...crypto.getRandomValues(new Uint8Array(8))].map((b) => b.toString(16).padStart(2, '0')).join('');
-
-async function roomKeys(code) {
-  const topic = 'ludoparty-rr7/' + (await sha256('topic:' + code)).slice(0, 32);
-  const raw = await crypto.subtle.digest('SHA-256', enc.encode('key:' + code));
-  const key = await crypto.subtle.importKey('raw', raw, 'AES-GCM', false, ['encrypt', 'decrypt']);
-  return { topic, key };
-}
-async function seal(key, obj) {
-  const iv = crypto.getRandomValues(new Uint8Array(12));
-  const ct = new Uint8Array(await crypto.subtle.encrypt({ name: 'AES-GCM', iv }, key, enc.encode(JSON.stringify(obj))));
-  const out = new Uint8Array(12 + ct.length);
-  out.set(iv); out.set(ct, 12);
-  return out;
-}
-async function unseal(key, payload) {
-  try {
-    const buf = new Uint8Array(payload);
-    const pt = await crypto.subtle.decrypt({ name: 'AES-GCM', iv: buf.slice(0, 12) }, key, buf.slice(12));
-    return JSON.parse(dec.decode(pt));
-  } catch (e) { return null; }
-}
-function connectBroker(url) {
-  const cl = mqtt.connect(url, { connectTimeout: 8000, reconnectPeriod: 2000, clean: true, clientId: 'lp_' + randomId() });
-  clients.push(cl);
-  return cl;
-}
-function firstBroker() {
-  return new Promise((resolve, reject) => {
-    let i = 0;
-    const tryNext = () => {
-      if (i >= BROKERS.length) return reject(new Error('no broker'));
-      const cl = connectBroker(BROKERS[i++]);
-      const t = setTimeout(() => { cl.end(true); tryNext(); }, 8000);
-      cl.once('connect', () => { clearTimeout(t); resolve(cl); });
-    };
-    tryNext();
-  });
-}
-
-// A conversation with one other player, shaped like a PeerJS DataConnection.
-function makeLink(client, keys, myId, peerId, sendTopic) {
-  const handlers = { data: [], close: [] };
-  let chain = Promise.resolve(), lastSeen = Date.now();
-  const link = {
-    open: true, peerId,
-    on(ev, fn) { handlers[ev].push(fn); },
-    send(msg) {
-      if (!link.open) return;
-      chain = chain.then(() => seal(keys.key, { ...msg, from_: myId, to: peerId }))
-        .then((p) => client.publish(sendTopic, p, { qos: 1 })).catch(() => {});
-    },
-    receive(m) {
-      lastSeen = Date.now();
-      if (m.t === 'ping') return;
-      if (m.t === 'bye') return link.drop();
-      handlers.data.forEach((fn) => fn(m));
-    },
-    drop() {
-      if (!link.open) return;
-      link.open = false;
-      clearInterval(beat);
-      handlers.close.forEach((fn) => fn());
-    },
-    close() { if (link.open) { link.send({ t: 'bye' }); link.drop(); } },
-  };
-  const beat = setInterval(() => {
-    if (Date.now() - lastSeen > 15000) link.drop(); else link.send({ t: 'ping' });
-  }, 4000);
-  return link;
-}
-
-function genCode() {
-  const chars = 'ABCDEFGHJKMNPQRSTUVWXYZ23456789', a = new Uint8Array(6);
-  crypto.getRandomValues(a);
-  return [...a].map((b) => chars[b % chars.length]).join('');
-}
 function teardown() {
   session++;
   clearTimeout(aiTimer);
@@ -686,8 +554,7 @@ function renderJoining(code) {
    The room code gives the topic and key. `epoch` counts host handovers: each host listens on
    its own epoch's topics, so a host that dropped out and came back can't talk over the new one. */
 const PROBE = 6; // how many epochs a joining player listens on
-const hostTopic = (keys, e) => `${keys.topic}/h${e}`;
-const guestTopic = (keys, e) => `${keys.topic}/g${e}`;
+// hostTopic / guestTopic come from shared/net.js
 
 async function listenAsHost() {
   const my = session, keys = await roomKeys(room.code);
@@ -718,7 +585,7 @@ async function createRoom() {
   if (typeof mqtt === 'undefined') return goHome('Could not load the online library. Check your internet 🙏');
   teardown();
   mode = 'host'; myColors = ['red'];
-  room = { code: genCode(), epoch: 0, seats: [{ name: me.name, avatar: myAvatar() }], teams: false, started: false };
+  room = { code: genCode('L'), epoch: 0, seats: [{ name: me.name, avatar: myAvatar() }], teams: false, started: false };
   hostName = me.name;
   $('#room-error').textContent = '';
   renderRoom(roomPayload());
@@ -949,28 +816,6 @@ function startCpu() {
 }
 
 /* ================= wiring ================= */
-let fails = 0, lockedUntil = 0;
-$('#login-form').addEventListener('submit', async (e) => {
-  e.preventDefault();
-  const err = $('#login-error');
-  if (Date.now() < lockedUntil) { err.textContent = 'Too many tries. Chill for a bit 🧊'; return; }
-  const user = $('#login-user').value, pass = $('#login-pass').value;
-  const proof = await makeProof(user, pass);
-  const name = await checkProof(user, proof);
-  if (!name) {
-    fails++;
-    if (fails >= 5) { lockedUntil = Date.now() + 30000; fails = 0; }
-    err.textContent = 'Nope! Wrong name or password 🙈';
-    retrigger($('#login-form'), 'shake');
-    sfx.sad();
-    return;
-  }
-  me = { name, proof, user: user.trim().toLowerCase() };
-  store.set('ludo-me', me); // stay logged in on this device
-  sfx.home();
-  enterHome();
-});
-
 function enterHome() {
   goHome();
   const roomParam = new URLSearchParams(location.search).get('room');
@@ -1028,25 +873,27 @@ $('#tokens').addEventListener('click', (e) => {
   document.querySelectorAll('.token.can').forEach((t) => t.classList.remove('can'));
   act({ t: 'move', i });
 });
-$('#btn-logout').onclick = () => {
-  teardown();
-  me = null;
-  store.del('ludo-me');
-  $('#me-sheet').hidden = true;
-  $('#login-pass').value = '';
-  show('login');
-};
+// Laptop shortcuts: Space rolls, 1-4 moves that piece, Enter jumps to the chat box.
+document.addEventListener('keydown', (e) => {
+  if (!document.querySelector('#screen-game.active') || e.ctrlKey || e.metaKey || e.altKey) return;
+  if (e.target instanceof Element && e.target.closest('input, textarea, button')) return;
+  if (e.key === ' ' && canRoll()) { e.preventDefault(); $('#dice').click(); }
+  else if (/^[1-4]$/.test(e.key)) {
+    const el = tokenEl(myColors[0], +e.key - 1);
+    if (el && el.classList.contains('can')) el.click();
+  } else if (e.key === 'Enter') { e.preventDefault(); openChat(); $('#chat-input').focus(); }
+});
 // Closing the app: say goodbye so the others react now instead of after the 15 s heartbeat.
 // teardown() clears `room` first, so the host doesn't announce anyone as offline on the way out.
 addEventListener('pagehide', () => { if (mode === 'host' || mode === 'guest') teardown(); });
 
-// Scripts run in order, so social.js is ready by the time the page has loaded.
+// Scripts run in order, so shared/core.js and social.js are ready by the time the page has loaded.
 document.addEventListener('DOMContentLoaded', () => {
   hydrateIcons();
   applyPalette();
   buildBoard();
   buildDice();
   showDice(6, false);
-  const saved = store.get('ludo-me', null);
-  if (saved) checkProof(saved.user || saved.name, saved.proof).then((name) => { if (name) { me = { name, proof: saved.proof, user: saved.user }; enterHome(); } });
+  wireProfileSheet();
+  requireLogin().then(enterHome);
 });

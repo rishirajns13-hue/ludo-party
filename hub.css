@@ -1,0 +1,69 @@
+/* Bonk Club hub. Laptop first: a wide two-up of game cards; phones get one column. */
+#screen-login.active { align-items: center; }
+.screen.hub.active { max-width: 1080px; justify-content: flex-start; gap: 18px; padding-block: 8px 28px; }
+.hub-top { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.hub-top .logo.small { font-size: 52px; }
+.hub-top .logo.small em { position: static; align-self: center; margin-left: 10px; font-size: 18px; }
+.hello { font-size: clamp(26px, 3.2vw, 38px); }
+
+.resume-banner {
+  display: flex; align-items: center; gap: 10px; padding: 12px 18px; border-radius: 18px; background: var(--green); color: #fff;
+  border: 3px solid var(--ink); box-shadow: var(--shadow); font-weight: 600; font-size: 18px; text-decoration: none; animation: bob 1.4s ease-in-out infinite;
+}
+.resume-banner b { letter-spacing: 2px; }
+
+.games { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 18px; }
+.game-card {
+  position: relative; display: grid; grid-template-rows: auto 1fr auto; gap: 12px; padding: 14px; color: var(--ink); text-decoration: none;
+  background: var(--paper); border: 3px solid var(--ink); border-radius: 24px; box-shadow: 5px 6px 0 var(--ink);
+  transition: transform .12s, box-shadow .12s;
+}
+.game-card:hover { transform: translate(-2px, -3px) rotate(-.4deg); box-shadow: 7px 9px 0 var(--ink); }
+.game-card:active { transform: translate(2px, 2px); box-shadow: 2px 2px 0 var(--ink); }
+.game-card .art { position: relative; height: 190px; border-radius: 16px; overflow: hidden; border: 3px solid var(--ink); }
+.game-card.doodle .art { background: #fff repeating-linear-gradient(0deg, transparent 0 27px, #dbe7ff 27px 28px); }
+.game-card.doodle svg { position: absolute; left: 50%; top: 55%; width: 250px; translate: -50% -50%; }
+.game-card .g {
+  position: absolute; font-family: 'Gaegu', var(--display); font-size: 22px; padding: 2px 10px; border-radius: 12px; background: #fff;
+  border: 2.5px solid var(--ink); box-shadow: 2px 2px 0 var(--ink);
+}
+.game-card .g.a { left: 6%; top: 10%; rotate: -6deg; }
+.game-card .g.b { right: 5%; top: 18%; rotate: 6deg; background: var(--yellow); }
+.game-card .g.c { left: 38%; bottom: 8%; rotate: -2deg; }
+.game-card.ludo .art { background: #fff; display: grid; place-items: center; }
+.mini-board { position: relative; width: 150px; height: 150px; display: grid; grid-template: 1fr 1fr / 1fr 1fr; gap: 0; border: 3px solid var(--ink); border-radius: 12px; overflow: hidden; transform: rotate(-6deg); box-shadow: 4px 4px 0 var(--ink); }
+.mini-board i:nth-child(1) { background: var(--red); } .mini-board i:nth-child(2) { background: var(--green); }
+.mini-board i:nth-child(3) { background: var(--blue); } .mini-board i:nth-child(4) { background: var(--yellow); }
+.mini-board b { position: absolute; left: 50%; top: 50%; width: 40px; height: 40px; translate: -50% -50%; border-radius: 50%; background: radial-gradient(circle at 32% 28%, #fff9 0 16%, transparent 18%), var(--red); border: 3px solid var(--ink); }
+.game-card .txt { display: grid; gap: 6px; align-content: start; }
+.game-card h2 { margin: 0; font-size: 32px; line-height: 1; }
+.game-card p { margin: 0; font-family: var(--body); font-weight: 700; font-size: 17px; color: var(--muted); }
+.game-card .meta { font-family: var(--body); font-weight: 800; font-size: 13px; color: var(--muted); }
+.game-card .play {
+  justify-self: start; display: inline-flex; align-items: center; min-height: 48px; padding: 0 26px; border-radius: 16px;
+  background: var(--cta); color: var(--cta-ink); border: 3px solid var(--ink); box-shadow: 3px 3px 0 var(--ink); font-weight: 600; font-size: 20px;
+}
+.badge-new {
+  position: absolute; top: -14px; right: 18px; z-index: 2; padding: 3px 14px; border-radius: 999px; background: var(--yellow);
+  border: 3px solid var(--ink); box-shadow: 2px 2px 0 var(--ink); font-weight: 700; transform: rotate(6deg);
+}
+
+.join { flex-direction: row; flex-wrap: wrap; align-items: center; gap: 12px 16px; }
+.join > b { font-size: 20px; }
+.join .join-row { flex: 1; min-width: min(100%, 300px); }
+.join .error { flex-basis: 100%; }
+
+.soon h3 { margin: 6px 0 10px; color: #fff; font-size: 22px; text-shadow: 2px 2px 0 var(--ink); }
+.soon-list { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; }
+.soon-card { display: grid; gap: 2px; padding: 12px 14px; border: 3px dashed #ffffffaa; border-radius: 18px; background: #ffffff26; color: #fff; text-shadow: 1px 1px 0 var(--ink); }
+.soon-card span { font-size: 30px; text-shadow: none; }
+.soon-card b { font-size: 17px; }
+.soon-card small { font-family: var(--body); font-weight: 700; font-size: 13px; }
+
+@media (max-width: 760px) {
+  .games, .soon-list { grid-template-columns: minmax(0, 1fr); }
+  .hub-top .logo.small { font-size: 40px; }
+  .game-card .art { height: 150px; }
+  .mini-board { width: 108px; height: 108px; }
+}
+@media (prefers-reduced-motion: reduce) { .resume-banner { animation: none; } }

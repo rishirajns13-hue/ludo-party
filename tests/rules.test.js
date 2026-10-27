@@ -1,7 +1,7 @@
 // Run with: node --test tests/
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const R = require('../rules.js');
+const R = require('../ludo/rules.js');
 
 const names = (ps) => Object.fromEntries(ps.map((c) => [c, c]));
 function game(players, opts, setup) {

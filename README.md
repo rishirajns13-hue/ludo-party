@@ -1,40 +1,45 @@
-# 🎲 Ludo Party
+# 💥 Bonk Club
 
-A small, fun online Ludo game for 2 to 4 friends. It's a static site (GitHub Pages), and players connect through encrypted messages relayed by a public MQTT broker.
+Tiny games for big goofballs. A private little game collection for a few friends. It's a static site (GitHub Pages), and players connect through encrypted messages relayed by a public MQTT broker. Built for laptops first, and it works on phones too.
 
-## How to play
-1. Open the site and log in with your secret name and password. Ask the person who set it up for these. You stay logged in on that device.
-2. Tap **New game** and share the 6-letter code (or the invite link) with up to 3 friends.
-3. Friends log in, enter the code and tap **Join**. Empty seats can be filled with bots.
-4. With 4 players you can switch on **Teams (2 v 2)**: seats 1 and 3 play against seats 2 and 4.
-5. The host taps **Start game**. Tap the dice to roll, then tap a glowing piece to move it.
+## Getting in
+Open the site and log in with your secret name and password. Ask the person who set it up for these. You stay logged in on that device. Pick a game from the home screen, or paste a friend's room code into **Got a code from a friend?** and you'll land in the right game.
 
-There's also **Practice against a bot**.
+## 🖍️ Doodle Duel (the quick one)
+One player secretly draws a word, everyone else races to guess it.
+1. **New game** makes a room. Share the code (it starts with D). 2–4 players.
+2. The host picks turns each, time to draw and the word packs: *Easy peasy*, *Silly stuff*, *Desi*, or your own **Inside jokes**.
+3. The drawer picks one of three words. Everyone else types guesses. **Wrong guesses pop up on the canvas for everyone to see.**
+4. Faster guesses score more. The drawer scores for every person who gets it. Letters appear as hints halfway through.
+5. After each drawing, stamp it: MASTERPIECE, WHAT IS THIS, MY EYES, 10/10.
+6. At the end: a podium, silly awards (Mind Reader, Picasso, Wild Guesser, Modern Artist, Clutch Master) and a gallery of every drawing with the best wrong guess. Save the ones worth framing.
 
-## During a game
-- The board turns so your pieces always start in the bottom-left corner.
-- **Chat:** tap *Message…* to open the chat. Messages also pop up next to the sender's name.
-- **Reactions:** tap the smiley button and pick an emoji, or hold it, slide and let go.
-- **Stickers:** the big stickers in the chat slam onto everyone's screen.
-- **Voice notes:** hold the mic button while you talk and let go to send. It plays on the other phones. The browser asks for microphone access the first time.
-- If someone drops out, a bot plays for them until they come back. If you close the app mid-game, the home screen shows **Back to your game**.
-- If the host leaves, the next player in seat order takes over hosting automatically and the game carries on. Nobody has to keep the app open for the others.
+**Chaos twists** (on by default) make some rounds harder: 🙈 the drawer is blindfolded, 🪞 the pen is mirrored, 👻 ink disappears, 🫨 wobbly hand, 📏 straight lines only.
 
-## Rules
-- You need a 6 to bring a piece out. Rolling a 6 gives you another roll, but three 6s in a row skips your turn.
-- Landing on an opponent sends their piece back to base (💥 BONK!) and gives you an extra roll. Pieces on ★ squares are safe. Teammates never bonk each other.
-- You need the exact number to get home. Getting a piece home gives you an extra roll.
-- The first player to get all 4 pieces home wins. In teams, a team wins when both partners are home; a player who finishes first is skipped until their partner catches up.
+Drawing tools: 10 colours, 3 brush sizes, fill bucket, eraser, undo and clear. On a laptop: Ctrl/Cmd+Z undoes, 1–3 change the brush, E is the eraser, F is fill.
+
+## 🎲 Ludo (the long one)
+1. **New game**, share the code, and fill empty seats with bots if you like. 2–4 players; with 4 you can play **Teams (2 v 2)**.
+2. Tap the dice to roll, then tap a glowing piece. On a laptop: **Space** rolls, **1–4** moves a piece, **Enter** jumps to the chat.
+3. Chat (docked beside the board on a laptop), emoji reactions, stickers and hold-to-talk voice notes.
+
+Rules: you need a 6 to bring a piece out; a 6 gives another roll, but three 6s in a row skips your turn. Landing on an opponent sends them back to base (💥 BONK!) and gives you another roll. ★ squares are safe, and teammates never bonk each other. You need the exact number to get home. First to get all 4 pieces home wins; in teams, both partners must finish.
+
+## If someone leaves
+In both games the host's browser runs the game and everyone else keeps a copy. If the host leaves, the next player in seat order takes over automatically and the others reconnect to them. In Ludo a bot plays for anyone who drops out, and the home screen offers **Back to your game**. In Doodle Duel, the round that was being drawn is skipped and the next one starts.
 
 ## Your look
-Tap your avatar on the home screen to pick an avatar and a colour palette (Sunset, Lagoon or Lemonade). The all-time score against your friends is kept on each device.
+Tap your avatar to pick an avatar and a colour palette (Sunset, Lagoon or Lemonade). It applies to every game.
 
 ## How logins work
-`game.js` stores only `sha256(sha256(name:password))`. When a friend joins, their browser sends the inner hash, which can't be worked out from the code. The host checks it and drops anyone who can't prove they know a password.
+`shared/core.js` stores only `sha256(sha256(name:password))`. When a friend joins, their browser sends the inner hash, which can't be worked out from the code. The host checks it and drops anyone who can't prove they know a password.
 
-The host's browser runs the game; everyone else keeps a copy of the latest state. When the host's connection closes, the remaining players agree on the next host (first in seat order) and reconnect to it on a fresh channel, so an old host coming back can't clash with the new one. Rooms take at most 4 players.
+## Project layout
+- `index.html`, `hub.js`, `hub.css`: the Bonk Club front door (login and game picker)
+- `shared/`: design system (`base.css`), login, icons and profile (`core.js`), networking (`net.js`)
+- `doodle.html`, `doodle/`: Doodle Duel (`logic.js` is the pure, tested part; `words.js` has the word packs)
+- `ludo.html`, `ludo/`: Ludo (`rules.js` is the pure, tested part)
+- `concepts/`: design mockups the interface was chosen from
 
 ## Running locally
-Serve the folder with any static server, for example `npx serve .`, and open it in two tabs. Run the rules tests with `node --test`.
-
-`concepts/` holds the design mockups the current interface was chosen from.
+Serve the folder with any static server, for example `npx serve .`, and open it in two tabs. Run the tests with `node --test`.

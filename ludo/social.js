@@ -1,74 +1,9 @@
 'use strict';
-/* Social layer: icons, your look (avatar + colours), the all-time score, chat, bubbles,
-   emote wheel, stickers and hold-to-talk voice notes. Talks to game.js through
+/* Ludo social layer: the all-time score, chat, bubbles, emote wheel, stickers and
+   hold-to-talk voice notes. Talks to game.js through
    sendSocial(), game, myColors, nameOf(), avatarOf(), sfx, toast(), floatEmoji(). */
 
-/* ================= icons (one stroke family, 24px grid) ================= */
-const DOT = (x, y) => `<circle cx="${x}" cy="${y}" r="1.5" fill="currentColor" stroke="none"/>`;
-const ICONS = {
-  dice: `<rect x="4" y="4" width="16" height="16" rx="4"/>${DOT(9, 9)}${DOT(15, 15)}${DOT(12, 12)}`,
-  chat: '<path d="M5 5h14a1 1 0 0 1 1 1v9a1 1 0 0 1-1 1H10l-5 4v-4a1 1 0 0 1-1-1V6a1 1 0 0 1 1-1z"/>',
-  mic: '<rect x="9" y="3" width="6" height="11" rx="3"/><path d="M5.5 11a6.5 6.5 0 0 0 13 0M12 17.5V21"/>',
-  smile: `<circle cx="12" cy="12" r="9"/><path d="M8.5 14.5s1.3 1.8 3.5 1.8 3.5-1.8 3.5-1.8"/>${DOT(9, 10)}${DOT(15, 10)}`,
-  send: '<path d="M5 12l14-7-5 15-2.5-6z"/><path d="M11.5 14L19 5"/>',
-  x: '<path d="M6 6l12 12M18 6L6 18"/>',
-  back: '<path d="M15 5l-7 7 7 7"/>',
-  share: '<path d="M12 4v11M7.5 8.5L12 4l4.5 4.5"/><path d="M5 13v5a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2v-5"/>',
-  plus: '<path d="M12 5v14M5 12h14"/>',
-  volume: '<path d="M4 9.5h3.5L12 6v12l-4.5-3.5H4z"/><path d="M16 9a4 4 0 0 1 0 6M18.5 6.5a7.5 7.5 0 0 1 0 11"/>',
-  mute: '<path d="M4 9.5h3.5L12 6v12l-4.5-3.5H4z"/><path d="M16.5 9.5l5 5M21.5 9.5l-5 5"/>',
-  trophy: '<path d="M8 4h8v5a4 4 0 0 1-8 0z"/><path d="M8 6H5.5a2.5 2.5 0 0 0 2.5 4M16 6h2.5a2.5 2.5 0 0 1-2.5 4M12 13v4M8.5 20h7M10 17h4"/>',
-  crown: '<path d="M4 18L3 8l5 4 4-6 4 6 5-4-1 10z" fill="currentColor"/>',
-  bot: `<rect x="5" y="8" width="14" height="11" rx="3.5"/><path d="M12 4.5V8M3 13v2M21 13v2"/>${DOT(9.5, 13)}${DOT(14.5, 13)}`,
-  check: '<path d="M5 12.5l4.5 4.5L19 7"/>',
-  play: '<path d="M8 5.5v13l10.5-6.5z" fill="currentColor"/>',
-  pause: '<path d="M8 5v14M16 5v14"/>',
-};
-const ic = (name) => `<svg class="ic" viewBox="0 0 24 24" aria-hidden="true">${ICONS[name]}</svg>`;
-function hydrateIcons(root = document) {
-  root.querySelectorAll('[data-icon]:not([data-iconed])').forEach((el) => {
-    el.insertAdjacentHTML('afterbegin', ic(el.dataset.icon));
-    el.dataset.iconed = '';
-  });
-}
-function setIcon(el, name) { const svg = el.querySelector('svg.ic'); if (svg) svg.innerHTML = ICONS[name]; }
-
-/* ================= your look: avatar + colours ================= */
-const AVATARS = ['😎', '🥰', '🤓', '🤠', '😺', '🐼', '🦊', '👻', '🐸', '🦄', '🐯', '🐙'];
-const PALETTES = [['sunset', 'Sunset'], ['lagoon', 'Lagoon'], ['lemonade', 'Lemonade']];
-const THEME_COLOR = { sunset: '#8f6bff', lagoon: '#2ad0c1', lemonade: '#ffb03b' };
-const store = {
-  get(k, fallback) { try { const v = localStorage.getItem(k); return v === null ? fallback : JSON.parse(v); } catch (e) { return fallback; } },
-  set(k, v) { try { localStorage.setItem(k, JSON.stringify(v)); } catch (e) { /* storage blocked */ } },
-  del(k) { try { localStorage.removeItem(k); } catch (e) { /* storage blocked */ } },
-};
-const DEFAULT_AVATAR = { 'panchara kunju': '😎', ammu: '🥰' };
-function myAvatar() {
-  const name = me ? me.name.toLowerCase() : '';
-  const a = store.get('ludo-avatar:' + name, null);
-  return AVATARS.includes(a) ? a : DEFAULT_AVATAR[name] || '😎';
-}
-function applyPalette(p = store.get('ludo-palette', 'sunset')) {
-  if (!PALETTES.some(([k]) => k === p)) p = 'sunset';
-  document.body.className = document.body.className.replace(/\bpal-\S+/g, '').trim() + ` pal-${p}`;
-  document.querySelector('meta[name="theme-color"]').content = THEME_COLOR[p];
-  return p;
-}
-function renderMeSheet() {
-  const mine = myAvatar(), pal = store.get('ludo-palette', 'sunset');
-  $('#avatars').innerHTML = AVATARS.map((a) => `<button type="button" aria-pressed="${a === mine}" aria-label="Avatar ${a}">${a}</button>`).join('');
-  $('#palettes').innerHTML = PALETTES.map(([k, label]) => `<button type="button" class="pal-${k}" data-pal="${k}" aria-pressed="${k === pal}"><span></span>${label}</button>`).join('');
-}
-$('#avatars').addEventListener('click', (e) => {
-  const b = e.target.closest('button'); if (!b || !me) return;
-  store.set('ludo-avatar:' + me.name.toLowerCase(), b.textContent);
-  renderMeSheet(); renderHome(); sfx.pop();
-});
-$('#palettes').addEventListener('click', (e) => {
-  const b = e.target.closest('button'); if (!b) return;
-  store.set('ludo-palette', applyPalette(b.dataset.pal));
-  renderMeSheet(); sfx.pop();
-});
+document.addEventListener('profilechange', renderHome);
 
 /* ================= all-time score, kept on this device ================= */
 const recordKey = () => 'ludo-record:' + me.name.toLowerCase();
@@ -158,7 +93,16 @@ function resetSocial() {
   closeChat();
 }
 function openChat() { $('#chat').hidden = false; setUnread(0); $('#msgs').scrollTop = 1e6; }
-function closeChat() { $('#chat').hidden = true; }
+function closeChat() { if (!$('#chat').classList.contains('docked')) $('#chat').hidden = true; }
+// On a laptop the chat stays docked beside the board during a game.
+const wideScreen = matchMedia('(min-width: 1000px)');
+function dockChat() {
+  const docked = wideScreen.matches && document.body.classList.contains('in-game');
+  const chat = $('#chat'), was = chat.classList.contains('docked');
+  chat.classList.toggle('docked', docked);
+  if (docked) openChat(); else if (was) chat.hidden = true;
+}
+wideScreen.addEventListener('change', dockChat);
 
 // Where a player's chip is on screen, so their bubble and reactions come out of it.
 function chipFor(color) { return document.querySelector(`.chip[data-c="${color}"]`); }
@@ -353,5 +297,3 @@ $('#chat-form').addEventListener('submit', (e) => {
 });
 $('#btn-chat').onclick = () => { openChat(); };
 $('#btn-chat-close').onclick = closeChat;
-$('#btn-me').onclick = () => { renderMeSheet(); $('#me-sheet').hidden = false; };
-$('#btn-me-close').onclick = () => { $('#me-sheet').hidden = true; };
