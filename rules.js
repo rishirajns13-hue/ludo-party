@@ -13,15 +13,20 @@
   const absIndex = (color, pos) => (START[color] + pos) % 52;
   const current = (s) => s.players[s.turn];
 
-  function newGame(players, names) {
-    const tokens = {};
-    players.forEach((c) => (tokens[c] = [-1, -1, -1, -1]));
+  // opts.teams with 4 players pairs seats 1+3 against 2+4 (partners sit opposite).
+  function newGame(players, names, opts = {}) {
+    const tokens = {}, stats = {};
+    players.forEach((c) => { tokens[c] = [-1, -1, -1, -1]; stats[c] = { bonks: 0, sixes: 0 }; });
+    const teams = opts.teams && players.length === 4 ? [[players[0], players[2]], [players[1], players[3]]] : null;
     return {
       gid: Math.random().toString(36).slice(2, 10),
-      v: 0, players, names, tokens,
-      turn: 0, phase: 'roll', dice: null, sixes: 0, winner: null, events: [],
+      v: 0, players, names, tokens, teams, stats, turns: 0,
+      turn: 0, phase: 'roll', dice: null, sixes: 0, winner: null, winners: null, events: [],
     };
   }
+
+  const teamOf = (s, color) => (s.teams && s.teams.find((t) => t.includes(color))) || [color];
+  const finished = (s, color) => s.tokens[color].every((p) => p === HOME);
 
   function legalMoves(s, color = current(s), dice = s.dice) {
     const out = [];
@@ -32,10 +37,15 @@
     return out;
   }
 
+  // Players who are already home (possible in teams) are skipped.
   function nextTurn(s) {
-    s.turn = (s.turn + 1) % s.players.length;
     s.phase = 'roll';
     s.sixes = 0;
+    s.turns = (s.turns || 0) + 1;
+    for (let k = 0; k < s.players.length; k++) {
+      s.turn = (s.turn + 1) % s.players.length;
+      if (!finished(s, current(s))) return;
+    }
   }
 
   function roll(s, value) {
@@ -45,6 +55,7 @@
     s.dice = value;
     s.events = [ev];
     s.sixes = value === 6 ? s.sixes + 1 : 0;
+    if (value === 6 && s.stats) s.stats[color].sixes++;
     if (s.sixes === 3) { ev.note = 'three6'; nextTurn(s); return s; }
     if (!legalMoves(s, color, value).length) {
       ev.note = 'nomove';
@@ -68,8 +79,9 @@
     if (to <= LAST_TRACK) {
       const a = absIndex(color, to);
       if (!SAFE.has(a)) {
+        const team = teamOf(s, color);
         for (const c of s.players) {
-          if (c === color) continue;
+          if (team.includes(c)) continue;
           s.tokens[c].forEach((p, j) => {
             if (p >= 0 && p <= LAST_TRACK && absIndex(c, p) === a) {
               s.tokens[c][j] = -1;
@@ -80,9 +92,16 @@
       }
     }
     if (to === HOME) ev.home = true;
+    if (s.stats) s.stats[color].bonks += ev.captured.length;
     s.events = [ev];
 
-    if (s.tokens[color].every((p) => p === HOME)) { s.winner = color; s.phase = 'over'; return s; }
+    if (finished(s, color)) {
+      const team = teamOf(s, color);
+      if (team.every((c) => finished(s, c))) { s.winner = color; s.winners = team; s.phase = 'over'; return s; }
+      ev.finished = true; // partner still racing: hand the turn on
+      nextTurn(s);
+      return s;
+    }
     if (dice === 6 || ev.captured.length || ev.home) { ev.bonus = true; s.phase = 'roll'; }
     else nextTurn(s);
     return s;
@@ -102,7 +121,7 @@
     return s;
   }
 
-  const api = { START, SAFE, LAST_TRACK, HOME, absIndex, current, newGame, legalMoves, roll, move, rollAuto };
+  const api = { START, SAFE, LAST_TRACK, HOME, absIndex, current, teamOf, newGame, legalMoves, roll, move, rollAuto };
   if (typeof module !== 'undefined' && module.exports) module.exports = api;
   else root.LudoRules = api;
 })(this);

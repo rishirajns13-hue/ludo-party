@@ -10,9 +10,11 @@ const ACCOUNTS = {
   'panchara kunju': { name: 'Panchara Kunju', hash: 'f63b078686d6b8b394222bbbfda7f69ae454c750a8d430076cb8fa994b3933ce' },
   ammu: { name: 'Ammu', hash: 'eeb63f1ee20923f64678e8aaba9d54eb1bb6fffa6dad7ded0345dd1dea393890' },
 };
-const EMOJIS = ['😂', '🔥', '😭', '👏', '😈', '🫡'];
 const COLORS = { red: '#ff5a5f', green: '#2bc48a', yellow: '#ffc233', blue: '#4d9de0' };
 const INK = '#2b2140';
+// Seat order → colours. Two players sit opposite each other; teams pair seats 1+3 and 2+4.
+const COLOR_SETS = { 2: ['red', 'yellow'], 3: ['red', 'green', 'yellow'], 4: ['red', 'green', 'yellow', 'blue'] };
+const BOT_NAMES = ['Bot Bonky', 'Robo Rani', 'Chip', 'Dice-o-tron'];
 
 async function sha256(text) {
   const buf = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(text));
@@ -41,6 +43,11 @@ const HOME_COL = {
 };
 const BASE = { red: [0, 0], green: [9, 0], yellow: [9, 9], blue: [0, 9] };
 const FINISH = { red: [6.6, 7.5], green: [7.5, 6.6], yellow: [8.4, 7.5], blue: [7.5, 8.4] };
+
+// The board turns so your own base is always bottom-left, nearest your thumb.
+const ROT = { red: -90, green: 180, yellow: 90, blue: 0 };
+const CORNERS = ['tl', 'tr', 'br', 'bl'], BASE_CORNER = { red: 0, green: 1, yellow: 2, blue: 3 };
+const cornerOf = (c) => CORNERS[(BASE_CORNER[c] + (ROT[myColors[0]] / 90 + 4)) % 4];
 
 function pointFor(color, pos, i) {
   if (pos === -1) { const [bx, by] = BASE[color]; return [bx + 2 + (i % 2) * 2, by + 2 + Math.floor(i / 2) * 2]; }
@@ -125,13 +132,14 @@ const sfx = (() => {
     win() { [523, 659, 784, 1047, 784, 1047, 1319].forEach((f, k) => tone(f, 0.25, 'square', 0.07, k * 0.14)); },
     pop() { tone(600, 0.07, 'sine', 0.12, 0, 1100); },
     sad() { tone(400, 0.3, 'triangle', 0.1, 0, 200); },
+    gasp() { tone(300, 0.5, 'sine', 0.1, 0, 900); },
     toggle() { muted = !muted; return muted; },
   };
 })();
 
 /* ================= effects ================= */
-function confetti(x, y, n = 30, spread = 220) {
-  const fx = $('#fx'), palette = Object.values(COLORS).concat('#fff', '#8f6bff');
+function confetti(x, y, n = 30, spread = 220, palette = Object.values(COLORS).concat('#fff', '#8f6bff')) {
+  const fx = $('#fx');
   for (let k = 0; k < n; k++) {
     const p = document.createElement('i');
     p.className = 'confetti';
@@ -158,35 +166,62 @@ function toast(msg, ms = 1900) {
 }
 function retrigger(el, cls) { el.classList.remove(cls); void el.offsetWidth; el.classList.add(cls); }
 function centerOf(el) { const r = el.getBoundingClientRect(); return [r.left + r.width / 2, r.top + r.height / 2]; }
+function boardLabel(text) { const l = $('#board-label'); l.textContent = text; retrigger(l, 'show'); }
+function floatEmoji(e, color) {
+  const anchor = isMine(color) ? $('#dice') : chipFor(color) || $('#board-wrap');
+  const [x, y] = centerOf(anchor);
+  const el = document.createElement('div');
+  el.className = 'float-emoji';
+  el.textContent = e;
+  el.style.left = x + 'px'; el.style.top = y + 'px';
+  el.style.setProperty('--dx', (Math.random() - 0.5) * 80 + 'px');
+  $('#fx').appendChild(el);
+  setTimeout(() => el.remove(), 1900);
+}
+function escapeHtml(s) { return String(s).replace(/[&<>"']/g, (ch) => `&#${ch.charCodeAt(0)};`); }
 
 /* ================= app state ================= */
 let me = null;            // { name, proof }
 let mode = null;          // 'host' | 'guest' | 'cpu'
 let myColors = [];
-let conn = null, roomCode = null;
+let conn = null;          // guest: link to the host
+let room = null;          // host: { code, seats: [{ name, avatar, bot, link, color }], teams, started }
+let hostName = '';        // guest: whose room this is
 let game = null;          // last fully-rendered state
 let display = null;       // token positions currently drawn (lags game during animations)
 let busy = false;
 let queue = Promise.resolve();
 let aiTimer = null;
-const AI = 'yellow';
+let offline = new Set();  // colours whose player dropped mid-game (a bot covers for them)
 
 const isMine = (color) => myColors.includes(color);
 const nameOf = (color) => (game && game.names[color]) || color;
+const shortName = (color) => (isMine(color) ? 'You' : nameOf(color).split(' ').pop());
+const avatarOf = (color) => (game && game.avatars && game.avatars[color]) || '🙂';
+const isBot = (color) => !!(game && game.bots && game.bots.includes(color));
 
 function show(screen) {
   document.querySelectorAll('.screen').forEach((s) => s.classList.toggle('active', s.id === 'screen-' + screen));
+  if (screen !== 'game') { closeChat(); closeWheel(); }
 }
 
 /* ================= host controller (source of truth) ================= */
 const host = {
   state: null,
-  start(players, names) { this.state = R.newGame(players, names); this.push(); },
+  cfg: null,
+  // cfg: { players, names, avatars, bots, teams }
+  start(cfg) {
+    this.cfg = cfg;
+    const s = R.newGame(cfg.players, cfg.names, { teams: cfg.teams });
+    s.avatars = cfg.avatars; s.bots = cfg.bots;
+    this.state = s;
+    this.push();
+  },
   handle(color, msg) {
     const s = this.state;
     if (!s || !msg) return;
     if (msg.t === 'restart') {
-      if (color === s.players[0] && s.phase === 'over') this.start(s.players, s.names);
+      if (color === s.players[0] && s.phase === 'over') this.start(this.cfg);
       return;
     }
     if (s.phase === 'over' || R.current(s) !== color) return;
@@ -202,7 +237,7 @@ const host = {
   },
   push(sync = false) {
     onState(this.state, sync);
-    if (conn && conn.open) conn.send({ t: 'state', s: this.state, sync });
+    if (room) room.seats.forEach((seat) => seat.link && seat.link.open && seat.link.send({ t: 'state', s: this.state, sync, you: seat.color }));
   },
 };
 function randomDie() {
@@ -219,21 +254,32 @@ function act(msg) {
 function buildTokens(players) {
   $('#tokens').innerHTML = players.map((c) =>
     [0, 1, 2, 3].map((i) =>
-      `<button class="token" data-c="${c}" data-i="${i}" style="--c:${COLORS[c]}" aria-label="${c} token ${i + 1}"><div class="tb"></div></button>`
+      `<button class="token" data-c="${c}" data-i="${i}" style="--c:${COLORS[c]}" aria-label="${escapeHtml(shortName(c))}, piece ${i + 1}">`
+      + '<div class="tb"><i class="x sweat">💧</i><i class="x stars">💫</i><i class="x hat">🥳</i></div></button>'
     ).join('')
   ).join('');
 }
 const tokenEl = (c, i) => $(`.token[data-c="${c}"][data-i="${i}"]`);
 
+// A piece is nervous when an opponent sits 1-6 squares behind it on an unsafe square.
+function threatened(tokens, players, color, a, teams) {
+  const team = teams || [color];
+  return players.some((c) => !team.includes(c) && tokens[c].some((p) => {
+    if (p < 0 || p > R.LAST_TRACK) return false;
+    const d = (a - R.absIndex(c, p) + 52) % 52;
+    return d >= 1 && d <= 6;
+  }));
+}
+
 function renderTokens() {
   const groups = {};
   for (const c of game.players) display[c].forEach((p, i) => {
     const pt = pointFor(c, p, i), key = pt.join(',');
-    (groups[key] = groups[key] || []).push({ c, i, pt });
+    (groups[key] = groups[key] || []).push({ c, i, pt, p });
   });
   for (const list of Object.values(groups)) {
     const n = list.length;
-    list.forEach(({ c, i, pt }, k) => {
+    list.forEach(({ c, i, pt, p }, k) => {
       let [x, y] = pt;
       if (n > 1) {
         const ang = (k / n) * Math.PI * 2 - Math.PI / 4;
@@ -244,21 +290,26 @@ function renderTokens() {
       el.style.top = (y / 15) * 100 + '%';
       el.style.setProperty('--s', n > 1 ? 0.7 : 1);
       el.style.zIndex = Math.round(y * 2) + k;
+      const onTrack = p >= 0 && p <= R.LAST_TRACK, a = onTrack ? R.absIndex(c, p) : -1;
+      el.classList.toggle('worried', onTrack && !R.SAFE.has(a) && threatened(display, game.players, c, a, R.teamOf(game, c)));
+      el.classList.toggle('party', p === R.HOME);
     });
   }
 }
 
 function renderPlayers() {
-  const chips = game.players.map((c) => {
+  document.querySelectorAll('.corner').forEach((el) => (el.innerHTML = ''));
+  const partner = R.teamOf(game, myColors[0]).find((c) => !isMine(c));
+  for (const c of game.players) {
+    if (isMine(c)) continue;
     const home = game.tokens[c].filter((p) => p === R.HOME).length;
     const active = game.phase !== 'over' && R.current(game) === c;
-    const tag = mode === 'cpu' && c === AI ? ' 🤖' : isMine(c) ? ' (you)' : '';
-    return `<div class="chip ${active ? 'active' : ''}" data-c="${c}" style="--c:${COLORS[c]}">
-      <span class="dot"></span><span class="nm">${escapeHtml(nameOf(c) + tag)}</span><span class="hm">🏠 ${home}/4</span></div>`;
-  });
-  $('#players').innerHTML = chips.join('<span class="vs">vs</span>');
+    const tag = offline.has(c) ? 'offline' : isBot(c) ? 'bot' : c === partner ? 'partner' : `${home}/4 home`;
+    const slot = document.querySelector(`.corner[data-corner="${cornerOf(c)}"]`);
+    if (slot) slot.insertAdjacentHTML('beforeend', `<div class="chip ${active ? 'active' : ''} ${offline.has(c) ? 'offline' : ''}" data-c="${c}" style="--c:${COLORS[c]}">
+      <span class="av">${avatarOf(c)}</span><span class="tx"><span class="nm">${escapeHtml(shortName(c))}</span><small>${tag}</small></span></div>`);
+  }
 }
-function escapeHtml(s) { return String(s).replace(/[&<>"']/g, (ch) => `&#${ch.charCodeAt(0)};`); }
 
 function canRoll() {
   return !busy && game && game.phase === 'roll' && isMine(R.current(game));
@@ -277,32 +328,46 @@ function renderControls() {
   document.querySelectorAll('.token.can').forEach((el) => el.classList.remove('can'));
   movable().forEach(([c, i]) => tokenEl(c, i).classList.add('can'));
   if (game) $('#dice-cube').style.setProperty('--dc', COLORS[R.current(game)]);
+  if (busy || !game) return;
 
   let text = '';
-  if (!game) text = '';
-  else if (game.phase === 'over') text = `${nameOf(game.winner)} wins! 🏆`;
-  else {
-    const c = R.current(game);
-    if (isMine(c) && game.phase === 'roll') text = 'Your turn! Tap the dice 🎲';
-    else if (isMine(c) && game.phase === 'move') text = 'Pick a token to move ✨';
-    else text = `${nameOf(c)} is ${game.phase === 'roll' ? 'rolling' : 'thinking'}… 🤔`;
+  if (game.phase !== 'over') {
+    const c = R.current(game), partner = !isMine(c) && R.teamOf(game, myColors[0]).includes(c);
+    if (isMine(c) && game.phase === 'roll') text = 'Your turn! Tap the dice';
+    else if (isMine(c)) text = 'Pick a piece to move';
+    else text = `${partner ? 'Your partner' : shortName(c)} is ${game.phase === 'roll' ? 'rolling' : 'thinking'}…`;
   }
-  if (!busy) $('#status').textContent = text;
+  const mine = game.tokens[myColors[0]] || [];
+  const home = mine.filter((p) => p === R.HOME).length, out = mine.filter((p) => p >= 0 && p < R.HOME).length;
+  $('#status').innerHTML = `${escapeHtml(text)}<small>${home} home · ${out} out</small>`;
+}
+
+function renderWin() {
+  const win = $('#win');
+  if (game.phase !== 'over') { win.hidden = true; return; }
+  recordResult(game);
+  const winners = game.winners || [game.winner], iWon = winners.some(isMine);
+  $('#win-title').textContent = iWon ? (winners.length > 1 ? 'Your team wins!' : 'You win!')
+    : `${winners.map(shortName).join(' & ')} ${winners.length > 1 ? 'win' : 'wins'}!`;
+  const rivals = game.players.filter((c) => !R.teamOf(game, myColors[0]).includes(c) && !isBot(c));
+  $('#win-vs').innerHTML = rivals.length === 1 && mode !== 'cpu' ? rivalLine(nameOf(rivals[0])) : '';
+  const st = game.stats ? game.stats[myColors[0]] : { bonks: 0, sixes: 0 };
+  $('#win-stats').innerHTML = `<div><b>${st.bonks}</b><small>Your bonks</small></div><div><b>${st.sixes}</b><small>Your sixes</small></div><div><b>${game.turns || 0}</b><small>Turns</small></div>`;
+  const per = winners.length > 1 ? 2 : 4;
+  $('#dancers').innerHTML = winners.flatMap((c) => Array.from({ length: per }, () => c))
+    .map((c, k) => `<i style="--c:${COLORS[c]};--k:${k}"></i>`).join('');
+  const isHost = mode !== 'guest';
+  $('#btn-again').hidden = !isHost;
+  $('#win-wait').hidden = isHost;
+  $('#win-wait').textContent = `Waiting for ${hostName ? hostName.split(' ').pop() : 'the host'} to start a rematch…`;
+  win.hidden = false;
 }
 
 function renderAll() {
   renderTokens();
   renderPlayers();
   renderControls();
-  const win = $('#win');
-  if (game.phase === 'over') {
-    const iWon = isMine(game.winner);
-    $('#win-title').textContent = iWon ? 'You win! 🎉' : `${nameOf(game.winner)} wins!`;
-    $('#win-sub').textContent = iWon ? 'Absolute legend. Bonk-master supreme.' : 'So close! Rematch? 😤';
-    $('#btn-again').hidden = mode === 'guest';
-    if (mode === 'guest') $('#win-sub').textContent += ' (waiting for host to restart)';
-    win.hidden = false;
-  } else win.hidden = true;
+  renderWin();
 }
 
 /* ================= state application + animation ================= */
@@ -314,6 +379,7 @@ async function applyState(s, sync) {
   if (fresh || sync) {
     game = s;
     display = JSON.parse(JSON.stringify(s.tokens));
+    $('#board-wrap').style.setProperty('--rot', ROT[myColors[0]] + 'deg');
     buildTokens(s.players);
     if (s.dice) showDice(s.dice, false);
     renderAll();
@@ -339,7 +405,7 @@ async function animateRoll(ev) {
   $('#dice-cube').style.setProperty('--dc', COLORS[ev.color]);
   sfx.roll();
   showDice(ev.value, true);
-  $('#status').textContent = `${isMine(ev.color) ? 'You' : nameOf(ev.color)} rolled…`;
+  $('#status').textContent = `${shortName(ev.color)} rolled…`;
   await sleep(850);
   $('#status').textContent = `${ev.value}!`;
   if (ev.value === 6) sfx.six();
@@ -348,50 +414,80 @@ async function animateRoll(ev) {
   else await sleep(250);
 }
 
+// The mover stops right behind an opponent's piece: a near miss for the piece in front.
+function nearMiss(ev) {
+  if (ev.captured.length || ev.to > R.LAST_TRACK) return false;
+  const target = (R.absIndex(ev.color, ev.to) + 1) % 52;
+  if (R.SAFE.has(target)) return false;
+  const team = R.teamOf(game, ev.color);
+  return game.players.some((c) => !team.includes(c) && display[c].some((p) => p >= 0 && p <= R.LAST_TRACK && R.absIndex(c, p) === target));
+}
+
 async function animateMove(ev) {
   const steps = ev.from === -1 ? [0] : Array.from({ length: ev.to - ev.from }, (_, k) => ev.from + 1 + k);
   const el = tokenEl(ev.color, ev.token);
-  el.style.zIndex = 60;
-  for (const p of steps) {
+  const close = nearMiss(ev);
+  for (const [k, p] of steps.entries()) {
     display[ev.color][ev.token] = p;
     renderTokens();
     el.style.zIndex = 60;
-    retrigger(el, 'hop');
+    const slow = close && k === steps.length - 1;
+    retrigger(el, slow ? 'slow' : 'hop');
     sfx.hop();
-    await sleep(175);
+    await sleep(slow ? 560 : 175);
   }
   if (ev.captured.length) {
     await sleep(60);
     retrigger($('#board-wrap'), 'shake');
     sfx.capture();
+    boardLabel('BONK!');
     confetti(...centerOf(el), 40, 160);
     for (const c of ev.captured) {
       display[c.color][c.token] = -1;
-      tokenEl(c.color, c.token).classList.add('flying');
+      const victim = tokenEl(c.color, c.token);
+      victim.classList.add('flying', 'dizzy');
+      setTimeout(() => victim.classList.remove('dizzy'), 2200);
     }
     renderTokens();
-    const bonker = isMine(ev.color) ? 'You' : nameOf(ev.color);
-    toast(`💥 BONK! ${bonker} sent a token home!`);
-    if (mode === 'cpu') floatEmoji(ev.color === AI ? '😈' : '😭', AI);
+    const victims = [...new Set(ev.captured.map((c) => c.color))];
+    if (victims.some(isMine)) toast(`💥 ${shortName(ev.color)} bonked you!`);
+    else toast(`💥 ${shortName(ev.color)} bonked ${victims.map(shortName).join(' & ')}!`);
+    if (mode === 'cpu') floatEmoji(isBot(ev.color) ? '😈' : '😭', game.players.find(isBot));
     await sleep(700);
     ev.captured.forEach((c) => tokenEl(c.color, c.token).classList.remove('flying'));
+  } else if (close) {
+    $('#board-wrap').classList.add('vignette');
+    boardLabel('SO CLOSE!');
+    sfx.gasp();
+    await sleep(1000);
+    $('#board-wrap').classList.remove('vignette');
   }
-  if (ev.home) { sfx.home(); confetti(...centerOf(el), 30, 140); toast('🏠 Token home! Bonus roll!'); await sleep(350); }
-  else if (ev.bonus && !ev.captured.length) toast('Rolled a 6 — roll again! 🎉', 1300);
+  if (ev.home) {
+    sfx.home();
+    boardLabel(ev.finished ? 'ALL HOME!' : 'HOME!');
+    const [x, y] = centerOf(el), col = [COLORS[ev.color], '#fff', COLORS[ev.color], '#ffc233'];
+    confetti(x, y, 40, 150, col);
+    setTimeout(() => confetti(x, y, 30, 220, col), 200);
+    if (ev.finished) toast(`${shortName(ev.color)} ${isMine(ev.color) ? 'are' : 'is'} all home! Partner, finish the job 💪`, 2600);
+    else toast('🏠 Piece home! Bonus roll!');
+    await sleep(450);
+  } else if (ev.bonus && !ev.captured.length) toast('Rolled a 6! Roll again 🎉', 1300);
 }
 
-/* ================= computer opponent ================= */
+/* ================= bots (and stand-ins for players who dropped) ================= */
 function maybeAI() {
   clearTimeout(aiTimer);
-  if (mode !== 'cpu' || !game || game.phase === 'over' || R.current(game) !== AI) return;
+  if (mode === 'guest' || !game || game.phase === 'over') return;
+  const c = R.current(game);
+  if (!isBot(c) && !offline.has(c)) return;
   aiTimer = setTimeout(() => {
-    if (busy || !game || R.current(game) !== AI) return;
-    if (game.phase === 'roll') host.handle(AI, { t: 'roll' });
-    else if (game.phase === 'move') host.handle(AI, { t: 'move', i: aiPick(game) });
-  }, game.phase === 'roll' ? 700 : 550);
+    if (busy || !game || R.current(game) !== c) return;
+    if (game.phase === 'roll') host.handle(c, { t: 'roll' });
+    else if (game.phase === 'move') host.handle(c, { t: 'move', i: aiPick(game) });
+  }, offline.has(c) ? 2500 : game.phase === 'roll' ? 750 : 550);
 }
 function aiPick(s) {
-  const color = R.current(s);
+  const color = R.current(s), team = R.teamOf(s, color);
   let best = null, bestScore = -Infinity;
   for (const i of R.legalMoves(s)) {
     const next = R.move(s, i), ev = next.events[0];
@@ -399,47 +495,20 @@ function aiPick(s) {
     if (ev.to <= R.LAST_TRACK) {
       const a = R.absIndex(color, ev.to);
       if (R.SAFE.has(a)) score += 25;
-      else if (threatened(s, color, a)) score -= 35;
+      else if (threatened(s.tokens, s.players, color, a, team)) score -= 35;
     }
-    if (ev.from >= 0 && ev.from <= R.LAST_TRACK && threatened(s, color, R.absIndex(color, ev.from))) score += 20;
+    if (ev.from >= 0 && ev.from <= R.LAST_TRACK && threatened(s.tokens, s.players, color, R.absIndex(color, ev.from), team)) score += 20;
     score += Math.random() * 3;
     if (score > bestScore) { bestScore = score; best = i; }
   }
   return best;
 }
-function threatened(s, color, a) {
-  return s.players.some((c) => c !== color && s.tokens[c].some((p) => {
-    if (p < 0 || p > R.LAST_TRACK) return false;
-    const d = (a - R.absIndex(c, p) + 52) % 52;
-    return d >= 1 && d <= 6;
-  }));
-}
-
-/* ================= reactions ================= */
-function floatEmoji(e, color) {
-  const chip = $(`.chip[data-c="${color}"]`) || $('#players');
-  const [x, y] = centerOf(chip);
-  const el = document.createElement('div');
-  el.className = 'float-emoji';
-  el.textContent = e;
-  el.style.left = x + 'px'; el.style.top = y + 'px';
-  el.style.setProperty('--dx', (Math.random() - 0.5) * 80 + 'px');
-  $('#fx').appendChild(el);
-  setTimeout(() => el.remove(), 1900);
-}
-let lastReact = 0;
-function sendReaction(e) {
-  if (Date.now() - lastReact < 600 || !game) return;
-  lastReact = Date.now();
-  sfx.pop();
-  floatEmoji(e, myColors[0]);
-  if (conn && conn.open) conn.send({ t: 'react', e });
-}
 
 /* ================= networking (encrypted messages via public MQTT brokers) =================
-   Both players connect *out* to a broker over secure WebSockets, so it works on any network
+   Everyone connects *out* to a broker over secure WebSockets, so it works on any network
    (mobile data, CGNAT, office Wi-Fi). Topic and AES key are derived from the room code, so
-   the broker only ever sees a hashed topic and ciphertext. */
+   the broker only ever sees a hashed topic and ciphertext. The host's browser runs the game;
+   guests send it their moves and chat, and it relays to everyone else. */
 const BROKERS = ['wss://broker.emqx.io:8084/mqtt', 'wss://broker.hivemq.com:8884/mqtt'];
 const enc = new TextEncoder(), dec = new TextDecoder();
 let clients = [];         // open MQTT clients
@@ -493,7 +562,7 @@ function makeLink(client, keys, myId, peerId, sendTopic) {
     on(ev, fn) { handlers[ev].push(fn); },
     send(msg) {
       if (!link.open) return;
-      chain = chain.then(() => seal(keys.key, { ...msg, from: myId, to: peerId }))
+      chain = chain.then(() => seal(keys.key, { ...msg, from_: myId, to: peerId }))
         .then((p) => client.publish(sendTopic, p, { qos: 1 })).catch(() => {});
     },
     receive(m) {
@@ -521,40 +590,104 @@ function genCode() {
   crypto.getRandomValues(a);
   return [...a].map((b) => chars[b % chars.length]).join('');
 }
-function lobbyView(view) {
-  $('#lobby-menu').hidden = view !== 'menu';
-  $('#lobby-wait').hidden = view !== 'wait';
-  $('#lobby-joining').hidden = view !== 'joining';
-}
-function lobbyError(msg) { $('#lobby-error').textContent = msg; }
 function teardown() {
   session++;
   clearTimeout(aiTimer);
-  if (conn) { try { conn.close(); } catch (e) {} }
+  const oldRoom = room, oldConn = conn;
+  room = null; conn = null; // so the close handlers below see we're leaving on purpose
+  if (oldConn) { try { oldConn.close(); } catch (e) {} }
+  if (oldRoom) oldRoom.seats.forEach((s) => { try { s.link && s.link.close(); } catch (e) {} });
   const old = clients;
   setTimeout(() => old.forEach((cl) => { try { cl.end(true); } catch (e) {} }), 400);
   clients = [];
-  conn = null; mode = null; game = null; host.state = null; roomCode = null;
-  queue = Promise.resolve(); busy = false;
+  conn = null; mode = null; game = null; host.state = null; room = null; hostName = '';
+  queue = Promise.resolve(); busy = false; offline = new Set();
   $('#win').hidden = true;
+  $('#toast').classList.remove('show');
+  $('#board-wrap').classList.remove('vignette');
+}
+function goHome(error = '') {
+  teardown();
+  show('home');
+  renderHome();
+  $('#home-error').textContent = error;
 }
 function startGameScreen() {
   show('game');
-  $('#reactions').hidden = mode === 'cpu';
+  resetSocial();
 }
 
+/* ---------- room screen (shared by host and guests) ---------- */
+function roomPayload() {
+  return { t: 'room', code: room.code, host: me.name, teams: room.teams, seats: room.seats.map((s) => ({ name: s.name, avatar: s.avatar, bot: !!s.bot })) };
+}
+function sendRoom() {
+  const p = roomPayload();
+  room.seats.forEach((s) => s.link && s.link.open && s.link.send(p));
+  renderRoom(p);
+}
+function renderRoom(p) {
+  const amHost = mode === 'host', n = p.seats.length, colors = COLOR_SETS[Math.max(2, n)] || COLOR_SETS[4];
+  const teams = p.teams && n === 4;
+  $('#room-title').textContent = amHost ? 'Your room' : `${p.host.split(' ').pop()}'s room`;
+  $('#code-card').hidden = false;
+  $('#code-hint').textContent = amHost ? 'Send this code to your friends' : 'Room code';
+  $('#room-code').textContent = p.code;
+  let html = '';
+  for (let i = 0; i < 4; i++) {
+    const s = p.seats[i];
+    if (s) {
+      const you = s.name === me.name && !s.bot;
+      const status = i === 0 ? 'Host' : s.bot ? '' : `${ic('check')}Joined`;
+      html += `<div class="seat" style="--c:${COLORS[colors[i]]}"><span class="av">${s.avatar}</span><span class="nm">${escapeHtml(s.name)}${you ? ' (you)' : ''}</span>`
+        + (teams ? `<span class="team">Team ${i % 2 ? 'B' : 'A'}</span>` : '')
+        + (s.bot && amHost ? `<button class="rm" type="button" data-rmbot="${i}" aria-label="Remove ${escapeHtml(s.name)}">${ic('x')}</button>` : `<span class="st">${s.bot ? 'Bot' : status}</span>`)
+        + '</div>';
+    } else if (amHost) {
+      html += `<button class="seat empty" type="button" data-addbot><span class="av">${ic('plus')}</span><span class="nm">Add a bot</span><span class="st">or wait for a friend</span></button>`;
+    } else {
+      html += '<div class="seat empty"><span class="av"></span><span class="nm">Open seat</span></div>';
+    }
+  }
+  $('#seats').innerHTML = html;
+  $('#teams').checked = teams;
+  $('#teams').disabled = !amHost || n !== 4;
+  $('#teams-hint').textContent = n === 4 ? 'Seats 1 and 3 against seats 2 and 4' : 'Turns on with 4 players';
+  $('#btn-start').hidden = !amHost;
+  $('#btn-start').disabled = n < 2;
+  const wait = $('#room-wait');
+  wait.hidden = amHost && n >= 2;
+  wait.innerHTML = amHost ? 'Waiting for a friend<span class="dots"><i>.</i><i>.</i><i>.</i></span>'
+    : `Waiting for ${escapeHtml(p.host.split(' ').pop())} to start<span class="dots"><i>.</i><i>.</i><i>.</i></span>`;
+}
+function renderJoining(code) {
+  $('#room-title').textContent = 'Joining…';
+  $('#code-card').hidden = false;
+  $('#code-hint').textContent = 'Room code';
+  $('#room-code').textContent = code;
+  $('#seats').innerHTML = '';
+  $('#btn-start').hidden = true;
+  $('#teams').disabled = true;
+  $('#room-wait').hidden = false;
+  $('#room-wait').innerHTML = 'Knocking on the door<span class="dots"><i>.</i><i>.</i><i>.</i></span>';
+  $('#room-error').textContent = '';
+}
+
+/* ---------- host ---------- */
 async function createRoom() {
-  if (typeof mqtt === 'undefined') return lobbyError('Could not load the online library. Check your internet 🙏');
-  lobbyError('');
+  if (typeof mqtt === 'undefined') return goHome('Could not load the online library. Check your internet 🙏');
   teardown();
   const my = session;
   mode = 'host'; myColors = ['red'];
-  roomCode = genCode();
-  lobbyView('joining');
-  const keys = await roomKeys(roomCode);
+  room = { code: genCode(), seats: [{ name: me.name, avatar: myAvatar() }], teams: false, started: false };
+  hostName = me.name;
+  $('#room-error').textContent = '';
+  renderRoom(roomPayload());
+  show('room');
+  const keys = await roomKeys(room.code);
   let client;
   try { client = await firstBroker(); } catch (e) {
-    if (my === session) { teardown(); lobbyView('menu'); lobbyError('Could not reach the game server. Check your internet and try again!'); }
+    if (my === session) goHome('Could not reach the game server. Check your internet and try again!');
     return;
   }
   if (my !== session) return;
@@ -562,73 +695,124 @@ async function createRoom() {
   client.subscribe(keys.topic + '/h', { qos: 1 });
   client.on('message', async (topic, payload) => {
     const m = await unseal(keys.key, payload);
-    if (!m || my !== session || typeof m.from !== 'string' || (m.to && m.to !== hostId)) return;
-    let link = links.get(m.from);
+    if (!m || my !== session || typeof m.from_ !== 'string' || (m.to && m.to !== hostId)) return;
+    let link = links.get(m.from_);
     if (!link) {
       if (m.t !== 'hello') return;
-      link = makeLink(client, keys, hostId, m.from, keys.topic + '/g');
-      links.set(m.from, link);
-      link.on('close', () => links.delete(m.from));
+      link = makeLink(client, keys, hostId, m.from_, keys.topic + '/g');
+      links.set(m.from_, link);
+      link.on('close', () => links.delete(m.from_));
       handleGuest(link);
     }
     link.receive(m);
   });
-  $('#room-code').textContent = roomCode;
-  lobbyView('wait');
 }
 
 function handleGuest(c) {
-  let state = 'new';
+  let state = 'new', seat = null;
   const timer = setTimeout(() => { if (state !== 'ok') c.drop(); }, 8000);
   c.on('data', async (d) => {
-    if (state === 'checking' || state === 'dead') return;
+    if (state === 'checking' || state === 'dead' || !room) return;
     if (state === 'new') {
       state = 'checking';
       const name = d && d.t === 'hello' ? await checkProof(d.user, d.proof) : null;
       const reject = (why) => { state = 'dead'; c.send({ t: 'reject', why }); setTimeout(() => c.drop(), 400); };
-      if (!name) return reject('Bad login 🚫');
-      if (conn && conn.open) return reject('Room is full 🙅');
+      if (!room) return;
+      if (!name) return reject('That login didn\'t work 🚫');
+      if (name === me.name) return reject('You\'re already in this room on another device 🙂');
+      seat = room.seats.find((s) => !s.bot && s.name === name);
+      if (room.started && !seat) return reject('This game already started. Ask for a new room 🙂');
+      if (!seat) {
+        if (room.seats.length >= 4) return reject('This room is full 🙅');
+        seat = { name };
+        room.seats.push(seat);
+      }
+      const old = seat.link;
+      seat.link = c;
+      if (old && old !== c) old.drop();
+      seat.avatar = AVATARS.includes(d.avatar) ? d.avatar : '🙂';
       state = 'ok';
       clearTimeout(timer);
-      conn = c;
-      if (!host.state) {
-        startGameScreen();
-        host.start(['red', 'yellow'], { red: me.name, yellow: name });
-        toast(`${name} joined! Let's gooo 🎉`);
+      sfx.pop();
+      if (room.started) {
+        offline.delete(seat.color);
+        sendPresence();
+        c.send({ t: 'state', s: host.state, sync: true, you: seat.color });
+        toast(`${name} is back 👋`);
       } else {
-        host.state.names.yellow = name;
-        host.push(true);
-        toast(`${name} is back! 👋`);
+        sendRoom();
+        toast(`${name} joined 🎉`);
       }
       return;
     }
-    if (c !== conn || !d) return;
-    if (d.t === 'act' && (d.a === 'roll' || d.a === 'move')) host.handle('yellow', { t: d.a, i: d.i });
-    else if (d.t === 'react' && EMOJIS.includes(d.e)) { sfx.pop(); floatEmoji(d.e, 'yellow'); }
+    if (state !== 'ok' || seat.link !== c || !d) return;
+    if (d.t === 'act' && room.started && (d.a === 'roll' || d.a === 'move')) host.handle(seat.color, { t: d.a, i: d.i });
+    else if (d.t === 'social' && room.started && d.m && typeof d.m === 'object') {
+      const m = { ...d.m, from: seat.color };
+      if (receiveSocial(m)) relaySocial(m, c);
+    }
   });
   c.on('close', () => {
-    if (c === conn) { conn = null; if (game) toast('Friend disconnected — they can rejoin with the same code', 3500); }
+    if (!room || !seat || seat.link !== c) return;
+    seat.link = null;
+    if (room.started) {
+      offline.add(seat.color);
+      sendPresence();
+      toast(`${seat.name.split(' ').pop()} dropped out. A bot plays for them until they're back.`, 3500);
+      maybeAI();
+    } else {
+      room.seats.splice(room.seats.indexOf(seat), 1);
+      sendRoom();
+    }
+  });
+}
+function sendPresence() {
+  const off = [...offline];
+  room.seats.forEach((s) => s.link && s.link.open && s.link.send({ t: 'presence', offline: off }));
+  if (game) renderPlayers();
+}
+function relaySocial(m, except) {
+  if (room) room.seats.forEach((s) => s.link && s.link.open && s.link !== except && s.link.send({ t: 'social', m }));
+}
+// Called by social.js with a message this device just sent and showed.
+function sendSocial(m) {
+  if (mode === 'host') relaySocial(m, null);
+  else if (mode === 'guest' && conn && conn.open) conn.send({ t: 'social', m });
+}
+
+function startOnline() {
+  const n = room.seats.length;
+  if (n < 2 || room.started) return;
+  const players = COLOR_SETS[n];
+  room.seats.forEach((s, i) => (s.color = players[i]));
+  room.started = true;
+  myColors = [players[0]];
+  const by = (f) => Object.fromEntries(room.seats.map((s) => [s.color, f(s)]));
+  startGameScreen();
+  host.start({
+    players, names: by((s) => s.name), avatars: by((s) => s.avatar),
+    bots: room.seats.filter((s) => s.bot).map((s) => s.color), teams: room.teams && n === 4,
   });
 }
 
+/* ---------- guest ---------- */
 async function joinRoom(code) {
   code = code.trim().toUpperCase();
-  if (!/^[A-Z0-9]{6}$/.test(code)) return lobbyError('Room codes are 6 letters/numbers 🙂');
-  if (typeof mqtt === 'undefined') return lobbyError('Could not load the online library. Check your internet 🙏');
-  lobbyError('');
+  if (!/^[A-Z0-9]{6}$/.test(code)) { $('#home-error').textContent = 'Room codes are 6 letters or numbers 🙂'; return; }
+  if (typeof mqtt === 'undefined') { $('#home-error').textContent = 'Could not load the online library. Check your internet 🙏'; return; }
   teardown();
   const my = session;
-  mode = 'guest'; myColors = ['yellow']; roomCode = code;
-  lobbyView('joining');
+  mode = 'guest'; myColors = [];
+  renderJoining(code);
+  show('room');
   const keys = await roomKeys(code);
   if (my !== session) return;
   const myId = randomId();
-  const fail = (msg) => { if (my !== session) return; teardown(); show('lobby'); lobbyView('menu'); lobbyError(msg); };
-  const giveUp = setTimeout(() => { if (!game) fail('No answer from that room 🤔 Is your friend still on the code screen?'); }, 20000);
+  const giveUp = setTimeout(() => { if (my === session && !conn) { goHome('No answer from that room 🤔 Is your friend still in it?'); $('#join-code').value = code; } }, 20000);
   let chosen = null;
   const sayHello = async (cl) => {
     if (chosen || my !== session) return;
-    cl.publish(keys.topic + '/h', await seal(keys.key, { t: 'hello', user: me.name, proof: me.proof, from: myId }), { qos: 1 });
+    cl.publish(keys.topic + '/h', await seal(keys.key, { t: 'hello', user: me.name, proof: me.proof, avatar: myAvatar(), from_: myId }), { qos: 1 });
   };
   // Try every broker at once; whichever one the host answers on wins.
   for (const url of BROKERS) {
@@ -647,39 +831,47 @@ async function joinRoom(code) {
       if (!chosen) {
         chosen = cl;
         clients.filter((o) => o !== cl).forEach((o) => o.end(true));
-        conn = makeLink(cl, keys, myId, m.from, keys.topic + '/h');
-        wireGuest(conn, giveUp);
+        conn = makeLink(cl, keys, myId, m.from_, keys.topic + '/h');
+        wireGuest(conn, giveUp, code);
       }
-      if (cl === chosen && conn && m.from === conn.peerId) conn.receive(m);
+      if (cl === chosen && conn && m.from_ === conn.peerId) conn.receive(m);
     });
   }
 }
 
-function wireGuest(link, giveUp) {
+function wireGuest(link, giveUp, code) {
   link.on('data', (d) => {
-    if (d.t === 'state') {
+    if (d.t === 'room') {
       clearTimeout(giveUp);
+      hostName = String(d.host || '');
+      if (!game && Array.isArray(d.seats)) { renderRoom(d); show('room'); }
+    } else if (d.t === 'state') {
+      clearTimeout(giveUp);
+      if (!(d.you in R.START)) return;
+      myColors = [d.you];
       if (!document.querySelector('#screen-game.active')) startGameScreen();
       onState(d.s, d.sync);
-    } else if (d.t === 'react' && EMOJIS.includes(d.e)) { sfx.pop(); floatEmoji(d.e, 'red'); }
-    else if (d.t === 'reject') { clearTimeout(giveUp); teardown(); show('lobby'); lobbyView('menu'); lobbyError(d.why); }
+    } else if (d.t === 'social' && d.m) receiveSocial(d.m);
+    else if (d.t === 'presence' && Array.isArray(d.offline)) { offline = new Set(d.offline); if (game) renderPlayers(); }
+    else if (d.t === 'reject') { clearTimeout(giveUp); goHome(String(d.why || 'Could not join')); }
   });
   link.on('close', () => {
     if (mode === 'guest' && conn === link) {
-      const code = roomCode;
-      teardown(); show('lobby'); lobbyView('menu');
+      goHome('Connection dropped. Tap Join to hop back in!');
       $('#join-code').value = code;
-      lobbyError('Connection dropped. Tap Join to hop back in!');
-      toast('Lost connection to host 😢', 4000);
+      toast('Lost connection to the host 😢', 4000);
     }
   });
 }
 
 function startCpu() {
   teardown();
-  mode = 'cpu'; myColors = ['red'];
+  mode = 'cpu'; myColors = ['red']; hostName = me.name;
   startGameScreen();
-  host.start(['red', AI], { red: me.name, [AI]: 'Robo-Bonk' });
+  host.start({
+    players: ['red', 'yellow'], names: { red: me.name, yellow: 'Robo-Bonk' },
+    avatars: { red: myAvatar(), yellow: '🤖' }, bots: ['yellow'], teams: false,
+  });
 }
 
 /* ================= wiring ================= */
@@ -700,21 +892,18 @@ $('#login-form').addEventListener('submit', async (e) => {
     return;
   }
   me = { name, proof };
-  try { sessionStorage.setItem('ludo-me', JSON.stringify(me)); } catch (e2) {}
+  store.set('ludo-me', me); // stay logged in on this device
   sfx.home();
-  enterLobby();
+  enterHome();
 });
 
-function enterLobby() {
-  $('#hello-name').textContent = me.name;
-  lobbyView('menu');
-  lobbyError('');
-  show('lobby');
-  const room = new URLSearchParams(location.search).get('room');
-  if (room) {
+function enterHome() {
+  goHome();
+  const roomParam = new URLSearchParams(location.search).get('room');
+  if (roomParam) {
     history.replaceState(null, '', location.pathname);
-    $('#join-code').value = room.toUpperCase();
-    joinRoom(room);
+    $('#join-code').value = roomParam.toUpperCase();
+    joinRoom(roomParam);
   }
 }
 
@@ -722,27 +911,39 @@ $('#btn-create').onclick = () => { sfx.pop(); createRoom(); };
 $('#btn-join').onclick = () => { sfx.pop(); joinRoom($('#join-code').value); };
 $('#join-code').addEventListener('keydown', (e) => { if (e.key === 'Enter') joinRoom(e.target.value); });
 $('#btn-cpu').onclick = () => { sfx.pop(); startCpu(); };
-$('#btn-cancel').onclick = $('#btn-cancel-join').onclick = () => { teardown(); lobbyView('menu'); };
-$('#btn-copy').onclick = async () => {
-  const link = `${location.origin}${location.pathname}?room=${roomCode}`;
-  try { await navigator.clipboard.writeText(link); toast('Invite link copied! Send it to your friend 💌'); }
+$('#btn-room-back').onclick = () => goHome();
+$('#btn-start').onclick = () => { sfx.pop(); startOnline(); };
+$('#teams').onchange = (e) => { if (mode === 'host' && room) { room.teams = e.target.checked; sendRoom(); } };
+$('#seats').addEventListener('click', (e) => {
+  if (mode !== 'host' || !room || room.started) return;
+  const add = e.target.closest('[data-addbot]'), rm = e.target.closest('[data-rmbot]');
+  if (add && room.seats.length < 4) {
+    const used = room.seats.map((s) => s.name);
+    room.seats.push({ name: BOT_NAMES.find((b) => !used.includes(b)), avatar: '🤖', bot: true });
+  } else if (rm) {
+    const i = +rm.dataset.rmbot;
+    if (room.seats[i] && room.seats[i].bot) room.seats.splice(i, 1);
+  } else return;
+  sfx.pop();
+  sendRoom();
+});
+$('#btn-share').onclick = async () => {
+  const code = $('#room-code').textContent;
+  const link = `${location.origin}${location.pathname}?room=${code}`;
+  if (navigator.share) {
+    try { await navigator.share({ title: 'Ludo Party', text: `Join my Ludo room: ${code}`, url: link }); return; } catch (e) { if (e.name === 'AbortError') return; }
+  }
+  try { await navigator.clipboard.writeText(link); toast('Invite link copied! Send it to your friends 💌'); }
   catch (e) { prompt('Copy this link:', link); }
 };
-$('#btn-logout').onclick = () => {
-  teardown();
-  me = null;
-  try { sessionStorage.removeItem('ludo-me'); } catch (e) {}
-  $('#login-pass').value = '';
-  show('login');
-};
 const leave = () => {
-  if (mode !== 'cpu' && game && game.phase !== 'over' && !confirm('Leave the game? Your friend will be left hanging 😢')) return;
-  teardown(); show('lobby'); lobbyView('menu'); lobbyError('');
+  if (mode !== 'cpu' && game && game.phase !== 'over' && !confirm('Leave the game? Everyone else will be left hanging 😢')) return;
+  goHome();
 };
 $('#btn-leave').onclick = leave;
-$('#btn-win-leave').onclick = () => { teardown(); show('lobby'); lobbyView('menu'); };
+$('#btn-win-leave').onclick = () => goHome();
 $('#btn-again').onclick = () => { if (game) host.handle(game.players[0], { t: 'restart' }); };
-$('#btn-mute').onclick = (e) => { e.currentTarget.textContent = sfx.toggle() ? '🔇' : '🔊'; };
+$('#btn-mute').onclick = (e) => setIcon(e.currentTarget, sfx.toggle() ? 'mute' : 'volume');
 $('#dice').onclick = () => { if (canRoll()) { $('#dice').disabled = true; act({ t: 'roll' }); } };
 $('#tokens').addEventListener('click', (e) => {
   const el = e.target.closest('.token.can');
@@ -752,13 +953,22 @@ $('#tokens').addEventListener('click', (e) => {
   document.querySelectorAll('.token.can').forEach((t) => t.classList.remove('can'));
   act({ t: 'move', i });
 });
-$('#reactions').innerHTML = EMOJIS.map((e) => `<button type="button" aria-label="Send ${e}">${e}</button>`).join('');
-$('#reactions').addEventListener('click', (e) => { const b = e.target.closest('button'); if (b) sendReaction(b.textContent); });
+$('#btn-logout').onclick = () => {
+  teardown();
+  me = null;
+  store.del('ludo-me');
+  $('#me-sheet').hidden = true;
+  $('#login-pass').value = '';
+  show('login');
+};
 
-buildBoard();
-buildDice();
-showDice(6, false);
-try {
-  const saved = JSON.parse(sessionStorage.getItem('ludo-me') || 'null');
-  if (saved) checkProof(saved.name, saved.proof).then((name) => { if (name) { me = { name, proof: saved.proof }; enterLobby(); } });
-} catch (e) {}
+// Scripts run in order, so social.js is ready by the time the page has loaded.
+document.addEventListener('DOMContentLoaded', () => {
+  hydrateIcons();
+  applyPalette();
+  buildBoard();
+  buildDice();
+  showDice(6, false);
+  const saved = store.get('ludo-me', null);
+  if (saved) checkProof(saved.name, saved.proof).then((name) => { if (name) { me = { name, proof: saved.proof }; enterHome(); } });
+});
