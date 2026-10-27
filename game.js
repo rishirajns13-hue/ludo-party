@@ -83,16 +83,20 @@ function buildBoard() {
 /* ================= dice ================= */
 const PIPS = { 1: [5], 2: [1, 9], 3: [1, 5, 9], 4: [1, 3, 7, 9], 5: [1, 3, 5, 7, 9], 6: [1, 3, 4, 6, 7, 9] };
 const FACE_ROT = { 1: [0, 0], 2: [-90, 0], 3: [0, -90], 4: [0, 90], 5: [90, 0], 6: [0, 180] };
-let diceSpins = 0;
+let diceRot = [0, 0];
 function buildDice() {
   $('#dice-cube').innerHTML = [1, 2, 3, 4, 5, 6].map((n) =>
     `<div class="face f${n}">${[1, 2, 3, 4, 5, 6, 7, 8, 9].map((k) => `<i class="${PIPS[n].includes(k) ? 'on' : ''}"></i>`).join('')}</div>`
   ).join('');
 }
+// Always rotate forwards to the target face (plus two full turns when spinning), never backwards.
 function showDice(value, spin) {
-  if (spin) diceSpins += 2;
-  const [ax, ay] = FACE_ROT[value];
-  $('#dice-cube').style.transform = `rotateX(${ax + diceSpins * 360}deg) rotateY(${ay + diceSpins * 360 + (spin ? 360 : 0)}deg)`;
+  const mod = (a) => ((a % 360) + 360) % 360;
+  diceRot = FACE_ROT[value].map((target, k) => {
+    const cur = diceRot[k];
+    return cur + mod(target - cur) + (spin ? 720 : 0);
+  });
+  $('#dice-cube').style.transform = `rotateX(${diceRot[0]}deg) rotateY(${diceRot[1]}deg)`;
 }
 
 /* ================= sounds (WebAudio, no files) ================= */

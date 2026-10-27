@@ -175,7 +175,8 @@ input:focus { box-shadow: 0 0 0 4px #8f6bff55; }
   font-weight: 700; font-size: 13px; padding: 2px 8px; border-radius: 999px; transform: rotate(12deg);
   animation: bob .8s infinite;
 }
-.dice-btn.ready .dice { animation: dice-pulse 1s ease-in-out infinite; }
+/* The glow lives on the button: a filter on the preserve-3d cube would flatten it and hide every face. */
+.dice-btn.ready { animation: dice-pulse 1s ease-in-out infinite; }
 @keyframes dice-pulse { 50% { filter: drop-shadow(0 0 12px #fff) drop-shadow(0 0 4px #fff); } }
 .dice {
   --half: 34px; width: 68px; height: 68px; margin: 8px; position: relative; transform-style: preserve-3d;
